@@ -49,6 +49,18 @@ Factorio 引擎中载具机器人站的取货来源是硬编码的（`car_trunk`
 
 文件夹名必须为 `vehicle-shared-inventory_0.1.0`。
 
+## 发布
+
+改 `info.json` 里的 `version`，在 `changelog.txt` 加上对应条目，然后 push 到 `master`。GitHub Actions 会打一份符合 portal 规范的 zip，并发布 tag 为 `v{version}` 的 Release。
+
+从 Release 下载 `vehicle-shared-inventory_{version}.zip`，上传到 [mods.factorio.com](https://mods.factorio.com)。
+
+本地打包（与 CI 同一套脚本）：
+
+```powershell
+python pack.py
+```
+
 开发时推荐用软链接：
 
 ```powershell

@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Recreate the GitHub release for the current info.json version
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pack
+        id: pack
+        run: python3 pack.py --github-output
+
+      - name: Check existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.pack.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip when already released
+        if: ${{ steps.existing.outputs.exists == 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.force != 'true') }}
+        run: |
+          echo "Release ${{ steps.pack.outputs.tag }} already exists."
+          echo "Bump the version in info.json (and changelog.txt) to publish a new one."
+
+      - name: Publish GitHub Release
+        if: ${{ steps.existing.outputs.exists != 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.force == 'true') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.pack.outputs.tag }}
+          name: ${{ steps.pack.outputs.version }}
+          body_path: build/release-notes.md
+          files: ${{ steps.pack.outputs.zip }}
+          fail_on_unmatched_files: true
+          make_latest: true

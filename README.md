@@ -49,6 +49,18 @@ Place the folder (or a `vehicle-shared-inventory_0.1.0.zip` archive) into:
 
 The folder must be named `vehicle-shared-inventory_0.1.0`.
 
+## Releasing
+
+Bump `version` in `info.json` and add a matching section to `changelog.txt`, then push to `master`. GitHub Actions packs a portal-safe zip and publishes a Release tagged `v{version}`.
+
+Download `vehicle-shared-inventory_{version}.zip` from that Release and upload it on [mods.factorio.com](https://mods.factorio.com).
+
+Local pack (same zip as CI):
+
+```powershell
+python pack.py
+```
+
 For development, a symlink works well:
 
 ```powershell
