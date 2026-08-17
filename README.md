@@ -1,46 +1,75 @@
 # Vehicle Shared Inventory
 
-Factorio 2.0 / Space Age mod。
+Factorio 2.0 / Space Age mod.
 
-坐在蜘蛛机甲（或汽车、坦克）里铺蓝图时，建造机器人只认载具后备箱，玩家背包里的材料用不上，必须反复下车倒货。本 mod 自动把缺的材料从背包送进后备箱，下车时再还回来。
+**English** | [中文](./README.zh-CN.md)
 
-## 功能
+Building from inside a spidertron (or car, or tank) is awkward: construction robots only pull materials from the vehicle trunk, so anything sitting in your character inventory is useless until you climb out and transfer it by hand. This mod moves what is missing into the trunk automatically, and gives it back when you leave.
 
-- 自动补料：扫描载具机器人范围内的实体幽灵、**地板幽灵**、模块请求、升级请求，只搬**缺的**部分。
-- 记账式归还：离开载具时归还本 mod 借出的物品，**载具原有物资永远不会被拿走**。
-- 品质感知：不同 quality 的物品独立计数，不会混淆。
-- 支持蜘蛛机甲、汽车、坦克，按 prototype type 判定，模组载具自动兼容。
-- 性能优先：脏标记缓存 + 规模探测，空闲时主循环近似 O(1)。
+## Features
 
-## 为什么不是真正的"合并库存"
+- **Automatic resupply** — scans entity ghosts, **tile ghosts**, module requests and upgrade orders within the vehicle's construction radius, and transfers only what is actually missing.
+- **Robot sharing** — lends construction robots from your inventory up to the vehicle's roboport capacity, but only when there is work nearby, so an idle vehicle never drains your stock. Highest quality first.
+- **Ledger-based return** — on exit, only the items this mod lent are returned. **The vehicle's own stock is never taken.**
+- **Quality aware** — items of different qualities are tracked separately and never merged.
+- **Broad vehicle support** — spidertrons, cars and tanks, matched by prototype type so modded vehicles work automatically.
+- **Performance first** — dirty-flag caching and a scale probe keep the main loop near O(1) when idle.
 
-Factorio 引擎中建造机器人的取货来源是硬编码的（`car_trunk` / `spider_trunk`），Lua API 无法注入第二个来源；`LinkedContainerPrototype` 的共享也只对同 prototype 的容器生效。所以真正的库存合并在 API 层面不可能，本 mod 采用**按需高频搬运**来模拟。
+## Why this is not a true "merged inventory"
 
-## 设置
+The engine hardcodes the construction source for vehicle roboports (`car_trunk` / `spider_trunk`), and the Lua API offers no way to inject a second source. `LinkedContainerPrototype` sharing only applies between containers of the same prototype, so neither the character nor the vehicle qualifies.
 
-| 设置 | 默认 | 说明 |
+A genuine inventory merge is therefore impossible at the API level. This mod simulates one through **on-demand transfer**.
+
+## Settings
+
+| Setting | Default | Description |
 |---|---|---|
-| 启用背包共享 | 开 | 总开关（按玩家） |
-| 更新间隔 | 15 tick | 可选 5 / 15 / 30 / 60 |
-| 离开时归还 | 开 | 关闭则单向借出 |
-| 要求机器人站 | 开 | 关闭后无 roboport 也共享 |
-| 支持的载具 | 蜘蛛+车辆 | 启动设置，可改为仅蜘蛛 |
-| 单次扫描上限 | 5000 | 全局设置 |
+| Enable shared inventory | on | Master switch (per player) |
+| Share construction robots | on | Lend robots up to roboport capacity |
+| Update interval | 15 ticks | 5 / 15 / 30 / 60 |
+| Return borrowed items when leaving | on | Turn off for one-way lending |
+| Require a roboport in the vehicle | on | Turn off to share without a roboport |
+| Supported vehicles | Spidertrons, cars and tanks | Startup setting |
+| Max ghosts per scan | 5000 | Global setting |
 
-## 安装（开发中）
+## Installation (in development)
 
-把整个文件夹（或打包成 `vehicle-shared-inventory_0.1.0.zip`）放入：
+Place the folder (or a `vehicle-shared-inventory_0.1.0.zip` archive) into:
 
 ```
 %APPDATA%\Factorio\mods\
 ```
 
-文件夹名必须为 `vehicle-shared-inventory_0.1.0`。
+The folder must be named `vehicle-shared-inventory_0.1.0`.
 
-## 已知限制
+For development, a symlink works well:
 
-- 遥控蜘蛛（未乘坐）时不生效。
-- 不支持火车车厢。
-- 不自动补给弹药与燃料栏。
+```powershell
+New-Item -ItemType SymbolicLink `
+  -Path "$env:APPDATA\Factorio\mods\vehicle-shared-inventory_0.1.0" `
+  -Target "<path to this repo>"
+```
 
-详细设计见 [SPEC.md](./SPEC.md)。
+## Diagnostics
+
+Run in the console while riding a vehicle:
+
+```
+/vsi-debug
+```
+
+Reports whether the player is tracked, the powered roboport radius, ghost count in range, robot capacity versus robots present, and the computed shortfall.
+
+## Known limitations
+
+- Does not work while remote-controlling a spidertron (only while riding).
+- Train wagons are not supported.
+- Ammo and fuel slots are not resupplied.
+- Robots that are in flight or carrying cargo are not recalled on exit. They stay with the vehicle rather than being destroyed, so a return may be partial — nothing is lost.
+
+See [SPEC.md](./SPEC.md) for the full design.
+
+## License
+
+MIT

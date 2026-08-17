@@ -4,6 +4,8 @@
   "title": "Vehicle Shared Inventory",
   "author": "CharlesYWL",
   "factorio_version": "2.0",
+  "license": "MIT",
+  "homepage": "https://github.com/CharlesYWL/factorio-vehicle-shared-inventory",
   "dependencies": [
     "base >= 2.0.0"
   ],
