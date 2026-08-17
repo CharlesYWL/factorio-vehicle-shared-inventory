@@ -45,7 +45,35 @@ foreach ($folder in @("scripts", "locale")) {
     }
 }
 
-Compress-Archive -Path $stageDir -DestinationPath $zipPath -CompressionLevel Optimal
+# PowerShell's Compress-Archive writes Windows backslashes into the zip, which
+# the Factorio mod portal rejects. ZipArchive with an explicit posix path is fine.
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+$zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    Get-ChildItem -Path $stageDir -Recurse -File | ForEach-Object {
+        $relative = $_.FullName.Substring($buildRoot.Length + 1).Replace('\', '/')
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $zip,
+            $_.FullName,
+            $relative,
+            [System.IO.Compression.CompressionLevel]::Optimal
+        )
+    }
+} finally {
+    $zip.Dispose()
+}
+
 Remove-Item $stageDir -Recurse -Force
 
 Write-Host "Built $zipPath"
+Write-Host "Entries:"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$check = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+try {
+    $check.Entries | ForEach-Object { Write-Host "  $($_.FullName)" }
+} finally {
+    $check.Dispose()
+}
