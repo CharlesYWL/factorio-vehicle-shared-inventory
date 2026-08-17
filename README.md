@@ -9,7 +9,9 @@ Building from inside a spidertron (or car, or tank) is awkward: construction rob
 ## Features
 
 - **Automatic resupply** — scans entity ghosts, **tile ghosts**, module requests and upgrade orders within the vehicle's construction radius, and transfers only what is actually missing.
-- **Robot sharing** — lends construction robots from your inventory up to the vehicle's roboport capacity, but only when there is work nearby, so an idle vehicle never drains your stock. Highest quality first.
+- **Cliff explosives** — cliffs marked for deconstruction are neutral-force entities with no ghost, so they are detected separately and the required explosive is supplied.
+- **Robot sharing** — lends construction robots from your inventory up to the vehicle's roboport capacity, triggered by construction *or* deconstruction work nearby, so an idle vehicle never drains your stock. Highest quality first.
+- **Overflow reclaim** — when the trunk runs low on free slots, deconstruction spoils are moved back into your inventory so mining does not stall. Only item types you already carry are taken, and ammo, fuel and robots are never reclaimed.
 - **Ledger-based return** — on exit, only the items this mod lent are returned. **The vehicle's own stock is never taken.**
 - **Quality aware** — items of different qualities are tracked separately and never merged.
 - **Broad vehicle support** — spidertrons, cars and tanks, matched by prototype type so modded vehicles work automatically.
@@ -29,9 +31,13 @@ A genuine inventory merge is therefore impossible at the API level. This mod sim
 | Share construction robots | on | Lend robots up to roboport capacity |
 | Update interval | 15 ticks | 5 / 15 / 30 / 60 |
 | Return borrowed items when leaving | on | Turn off for one-way lending |
+| Reclaim spoils when trunk fills up | on | Move deconstruction output back to you |
+| Trunk free space threshold | 20% | Reclaim starts below this much free space |
 | Require a roboport in the vehicle | on | Turn off to share without a roboport |
 | Supported vehicles | Spidertrons, cars and tanks | Startup setting |
 | Max ghosts per scan | 5000 | Global setting |
+
+> Adding or changing settings requires a **full restart of Factorio**, not just reloading a save: settings are registered during the startup stage.
 
 ## Installation (in development)
 

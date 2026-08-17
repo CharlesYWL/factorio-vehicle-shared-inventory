@@ -6,6 +6,14 @@ Date: 2026-08-16
       vehicle being ridden, so personal construction robots can build without leaving the vehicle
     - Supports spidertrons, cars and tanks (including modded vehicles of those prototype types)
     - Handles entity ghosts, tile ghosts, item request proxies and upgrade orders
+    - Lends construction robots up to the vehicle roboport capacity whenever there is construction
+      or deconstruction work nearby, highest quality first
+    - Supplies cliff explosives for cliffs marked for deconstruction
+    - Reclaims deconstruction spoils back into the player inventory when the trunk runs low on free
+      slots, limited to item types the player already carries
     - Quality aware: items of different qualities are tracked separately
-    - Borrowed items are returned when leaving the vehicle; the vehicle's own stock is never taken
-    - Per-player settings for update interval, return-on-exit and roboport requirement
+    - Borrowed items are returned when leaving the vehicle; the vehicle's own stock is never taken,
+      and ammo, fuel and robots are never reclaimed
+    - Per-player settings for update interval, robot sharing, return-on-exit, overflow reclaim
+      threshold and roboport requirement
+    - /vsi-debug command reports tracking state, roboport radius, nearby work and computed needs

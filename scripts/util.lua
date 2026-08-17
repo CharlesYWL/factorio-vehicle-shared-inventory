@@ -82,4 +82,29 @@ util.sorted_needs = function(needs)
   return list
 end
 
+--- Reads a per-player setting tolerantly. Settings are registered during the
+--- startup stage, so a newly added one is absent until Factorio is fully
+--- restarted: reloading a save is not enough. Falling back to a default keeps
+--- the mod running instead of crashing in that window.
+---@param player LuaPlayer
+---@param name string
+---@param fallback any
+---@return any
+util.setting = function(player, name, fallback)
+  local setting = player.mod_settings[name]
+  if setting == nil then return fallback end
+  return setting.value
+end
+
+--- Global settings share the same startup-registration caveat as per-player
+--- ones, so a newly added key is absent until Factorio is fully restarted.
+---@param name string
+---@param fallback any
+---@return any
+util.global_setting = function(name, fallback)
+  local setting = settings.global[name]
+  if setting == nil then return fallback end
+  return setting.value
+end
+
 return util

@@ -1,3 +1,5 @@
+local util = require("scripts.util")
+
 local eligibility = {}
 
 local TRUNK_BY_TYPE = {
@@ -10,7 +12,9 @@ local TRUNK_BY_TYPE = {
 ---@return boolean
 local is_type_allowed = function(vehicle_type)
   if vehicle_type == "spider-vehicle" then return true end
-  return settings.startup["vsi-vehicle-types"].value == "spider-and-car"
+  local setting = settings.startup["vsi-vehicle-types"]
+  if setting == nil then return true end
+  return setting.value == "spider-and-car"
 end
 
 --- Largest construction radius among powered roboport equipment in the grid.
@@ -37,7 +41,7 @@ end
 ---@return LuaInventory|nil trunk, number radius, LuaEntity|nil vehicle
 eligibility.resolve = function(player)
   if not (player and player.valid) then return nil, 0, nil end
-  if not player.mod_settings["vsi-enabled"].value then return nil, 0, nil end
+  if not util.setting(player, "vsi-enabled", true) then return nil, 0, nil end
 
   local character = player.character
   if not (character and character.valid) then return nil, 0, nil end
@@ -53,7 +57,7 @@ eligibility.resolve = function(player)
   if not (trunk and trunk.valid) then return nil, 0, nil end
 
   local radius = eligibility.construction_radius(vehicle)
-  if player.mod_settings["vsi-require-roboport"].value and radius <= 0 then
+  if util.setting(player, "vsi-require-roboport", true) and radius <= 0 then
     return nil, 0, nil
   end
   -- Without a roboport the check is bypassed, but we still need a sane scan

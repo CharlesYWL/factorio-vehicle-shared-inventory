@@ -71,10 +71,31 @@ for each active player in tracked_players:
 | `tile-ghost` | 同上（地板类，**不可遗漏**） |
 | `item-request-proxy` | `proxy.item_requests`（插模块） |
 | 升级请求 (`to_be_upgraded`) | 目标 prototype 的 `items_to_place_this` |
+| 待爆破悬崖 (`type = "cliff"`, `to_be_deconstructed`) | `cliff.prototype.cliff_explosive_prototype`，每座 1 个 |
+
+**注意**：悬崖与树木/石头属于**中立阵营**，查询时**不能加 force 过滤**，否则查不到。
 
 随后扣除载具后备箱现有数量：`needs[k] -= trunk.get_item_count(k)`，`<= 0` 的丢弃。
 
 **注意**：所有物品计数必须带 `quality`，键为 `name .. "/" .. quality`。禁止使用裸 item name。
+
+### 3.2.1 机器人需求
+
+机器人不走 ghost 驱动，独立计算：
+
+```
+if 附近有活 (有 ghost 或 有待拆除实体) and 开启共享机器人:
+    capacity  = Σ(载具 grid 内通电 roboport 的 robot_limit)
+    present   = 载具 logistic_network.all_construction_robots + 后备箱内机器人数量
+    shortfall = capacity - present
+    从玩家背包按 quality 降序取 shortfall 个，标记 priority = true
+```
+
+要点：
+
+- **触发条件是"有活"而非"缺材料"** —— 拆除不消耗材料，若用后者判断则纯拆除场景永不触发。
+- `present` 统计**整个物流网络**（含飞行中、充电中），而非仅停靠数，否则机器人一出动就会被重复补给。
+- `priority` 使其在 `transfer` 中**排在所有材料之前** —— 没机器人时材料到位也无用。
 
 ### 3.3 搬运 `transfer`
 
@@ -90,7 +111,25 @@ for each (item, needed) in needs, sorted by needed ascending:
     if inserted < amount: trunk 已满 -> 记录一次 "trunk full" 警告（节流）
 ```
 
-**排序理由**：优先满足需求量小的品类，保证后备箱格子有限时覆盖更多**种类**（种类齐全比单品充足更能让机器人开工）。
+**排序理由**：`priority`（机器人）永远最先；其余优先满足需求量小的品类，保证后备箱格子有限时覆盖更多**种类**（种类齐全比单品充足更能让机器人开工）。
+
+### 3.3.1 溢出回收 `pull_overflow`
+
+拆除产物会占满后备箱导致机器人停工，需要反向回收：
+
+```
+if 后备箱空格 > 总格数 * threshold (默认 20%): return   -- 平时不折腾
+for each 后备箱内物品:
+    if 是机器人 / 是弹药 / fuel_value > 0 / 在当前 needs 中: skip   -- 保护清单
+    if 玩家背包中该品类数量 == 0: skip                              -- 只收已有品类
+    搬回玩家背包，并从 ledger 中扣减相应数量
+```
+
+要点：
+
+- **只回收玩家背包已有的品类** —— 否则背包会被沿途杂物淹没。
+- **保护清单**必须包含当前 `needs`，否则会与 `push` 形成"搬进去又搬回来"的死循环。
+- 回收时**扣减 ledger**：债已提前还清，下车时不可重复计算。
 
 ### 3.4 回流 `return_borrowed`
 
@@ -134,6 +173,13 @@ clear ledger[player]
 
 维护 `storage.tracked_players`（在载具中的玩家 index 集合），由 `on_player_driving_changed_state` 增删。主循环只遍历该集合，而非 `game.players`。
 
+**但集合不可纯事件驱动**：driving 事件只在**状态变化**时触发，玩家读档时若已坐在载具中，事件从未发生，集合会永远为空。因此必须额外做**状态对账**：
+
+- 每 60 tick 遍历 `game.connected_players`，与实际乘坐状态同步一次。
+- `on_init` / `on_configuration_changed` / `on_player_joined_game` 各同步一次。
+
+对账开销远小于它防止的功能完全失效。
+
 ### 4.4 扫描量上限
 
 先用 `count_entities_filtered` 探测规模：
@@ -150,11 +196,16 @@ clear ledger[player]
 | 名称 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `vsi-enabled` | per-player bool | true | 总开关 |
+| `vsi-share-robots` | per-player bool | true | 共享建造机器人 |
 | `vsi-interval` | per-player int-setting (allowed: 5/15/30/60) | 15 | 主循环 tick 间隔 |
 | `vsi-return-on-exit` | per-player bool | true | 离开载具时回流借出物品 |
+| `vsi-return-overflow` | per-player bool | true | 后备箱将满时回收拆除产物 |
+| `vsi-overflow-threshold` | per-player int (1–90) | 20 | 触发回收的剩余空间百分比 |
 | `vsi-require-roboport` | per-player bool | true | 关闭后不检查载具 roboport（纯手动共享场景） |
 | `vsi-vehicle-types` | startup string ("spider" / "spider-and-car") | spider-and-car | 支持的载具范围 |
 | `vsi-max-ghosts` | runtime-global int | 5000 | 单次扫描 ghost 上限 |
+
+**所有设置读取必须容错**（`util.setting` / `util.global_setting`）。设置在**启动阶段**注册，新增设置项后若玩家只重新读档而未重启 Factorio，该键不存在；直接索引 `.value` 会崩溃，在多人游戏中会踢掉所有人。缺失时回退默认值。
 
 ---
 
@@ -191,9 +242,10 @@ factorio-vehicle-shared-inventory/
 ├── control.lua              -- 事件注册 + 主循环
 ├── scripts/
 │   ├── eligibility.lua      -- 载具/roboport 判定
-│   ├── needs.lua            -- ghost 扫描与需求计算
-│   ├── transfer.lua         -- 搬运与回流
-│   └── util.lua             -- item key 编解码、平方距离等
+│   ├── needs.lua            -- ghost/悬崖扫描与需求计算
+│   ├── robots.lua           -- 机器人容量、借出与召回
+│   ├── transfer.lua         -- 搬运、回收与归还
+│   └── util.lua             -- item key 编解码、平方距离、容错设置读取
 ├── locale/
 │   ├── en/strings.cfg
 │   └── zh-CN/strings.cfg
@@ -249,3 +301,14 @@ factorio-vehicle-shared-inventory/
 - 载具之间互相共享
 - 修改建造机器人本身的取货逻辑（API 不允许）
 - 弹药 / 燃料栏的自动补给（可作为 v2 功能）
+
+## 12. 实现中发现的关键陷阱
+
+按被发现的顺序记录，均为实测暴露：
+
+1. **集合纯事件驱动会失效** —— 见 §4.3。玩家坐着读档时永远不被追踪，功能完全静默失效且无报错。
+2. **拆除不消耗材料** —— 借机器人的条件若写成"缺材料"，纯拆除场景永不触发。必须解耦为"有活"。
+3. **中立阵营实体** —— 悬崖、树木、石头不属于玩家 force，带 force 过滤的查询查不到它们。
+4. **设置项需完全重启** —— 见 §5。仅重新读档不重新注册设置，直接索引会崩溃。
+5. **机器人不在后备箱** —— 被 roboport 吸收后不再是物品，归还前需先召回；且只能召回**空闲且无货**的，否则会销毁正在搬运的机器人导致物品凭空消失。
+6. **回收与补给的死循环** —— 回收的保护清单必须包含当前 needs，否则刚搬进去的又被搬回来。

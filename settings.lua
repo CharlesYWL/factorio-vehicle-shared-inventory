@@ -38,6 +38,22 @@ data:extend({
   },
   {
     type = "bool-setting",
+    name = "vsi-return-overflow",
+    setting_type = "runtime-per-user",
+    default_value = true,
+    order = "ca",
+  },
+  {
+    type = "int-setting",
+    name = "vsi-overflow-threshold",
+    setting_type = "runtime-per-user",
+    default_value = 20,
+    minimum_value = 1,
+    maximum_value = 90,
+    order = "cb",
+  },
+  {
+    type = "bool-setting",
     name = "vsi-require-roboport",
     setting_type = "runtime-per-user",
     default_value = true,

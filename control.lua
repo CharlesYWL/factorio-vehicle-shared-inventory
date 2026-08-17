@@ -93,12 +93,16 @@ local service_player = function(player)
     cache.last_vehicle_pos = { x = vehicle.position.x, y = vehicle.position.y }
   end
 
-  if not next(cache.needs) then return end
+  if next(cache.needs) then
+    transfer.push(player, trunk, cache.needs)
+    -- Pushed amounts are now in the trunk, so the snapshot must be recomputed
+    -- before it is trusted again.
+    cache.dirty = true
+  end
 
-  transfer.push(player, trunk, cache.needs)
-  -- Pushed amounts are now in the trunk, so the snapshot must be recomputed
-  -- before it is trusted again.
-  cache.dirty = true
+  if util.setting(player, "vsi-return-overflow", true) then
+    transfer.pull_overflow(player, trunk, cache.needs)
+  end
 end
 
 local RECONCILE_TICKS = 60
@@ -115,7 +119,7 @@ local on_tick = function(event)
   for player_index in pairs(storage.tracked_players) do
     local player = game.get_player(player_index)
     if player and player.valid then
-      local interval = player.mod_settings["vsi-interval"].value
+      local interval = util.setting(player, "vsi-interval", 15)
       if event.tick % interval == 0 then
         service_player(player)
       end
@@ -203,8 +207,11 @@ local dirty_events = {
   defines.events.on_marked_for_upgrade,
   defines.events.on_cancelled_upgrade,
   defines.events.on_cancelled_deconstruction,
+  defines.events.on_player_mined_entity,
+  defines.events.on_robot_mined_entity,
   defines.events.script_raised_built,
   defines.events.script_raised_revive,
+  defines.events.script_raised_destroy,
 }
 
 for _, event_id in pairs(dirty_events) do
@@ -224,7 +231,7 @@ commands.add_command("vsi-debug", "Vehicle Shared Inventory diagnostics", functi
   local say = function(text) player.print(text) end
 
   say("--- vsi-debug ---")
-  say("enabled: " .. tostring(player.mod_settings["vsi-enabled"].value))
+  say("enabled: " .. tostring(util.setting(player, "vsi-enabled", true)))
   say("tracked: " .. tostring(storage.tracked_players[player.index] == true))
   say("character: " .. tostring(player.character ~= nil))
   local vehicle = player.vehicle
@@ -260,7 +267,10 @@ commands.add_command("vsi-debug", "Vehicle Shared Inventory diagnostics", functi
     type = { "entity-ghost", "tile-ghost", "item-request-proxy" },
   })
   say("ghosts in radius: " .. counted)
+  local has_ghosts, has_deconstruction = needs.probe_work(vehicle, resolved_radius)
+  say("work nearby: ghosts=" .. tostring(has_ghosts) .. " deconstruction=" .. tostring(has_deconstruction))
   say("robot capacity: " .. robots.capacity(vehicle) .. ", present: " .. robots.present(vehicle, trunk))
+  say("trunk: " .. trunk.count_empty_stacks() .. " free of " .. #trunk .. " slots")
 
   local required = needs.scan(player, vehicle, trunk, resolved_radius)
   local lines = 0

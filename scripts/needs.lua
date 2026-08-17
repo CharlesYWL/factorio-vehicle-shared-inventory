@@ -55,13 +55,44 @@ local collect_upgrade = function(entity, out)
   util.add_item(out, name, quality, count)
 end
 
+--- Cliffs marked for deconstruction consume explosives rather than being mined.
+--- They are neutral-force entities, so they need their own unfiltered query, and
+--- the required item comes from the cliff prototype rather than from a ghost.
+---@param surface LuaSurface
+---@param position MapPosition
+---@param radius number
+---@param out table
+local collect_cliffs = function(surface, position, radius, out)
+  local cliffs = surface.find_entities_filtered({
+    position = position,
+    radius = radius,
+    type = "cliff",
+    to_be_deconstructed = true,
+  })
+
+  for _, cliff in pairs(cliffs) do
+    if cliff.valid then
+      local explosive = cliff.prototype.cliff_explosive_prototype
+      if explosive then
+        util.add_item(out, explosive, "normal", 1)
+      end
+    end
+  end
+end
+
 --- Gathers build sources around the vehicle, applying the scale probe described
 --- in SPEC 4.4: small workloads skip sorting entirely.
+--- Gathers build sources around the vehicle, applying the scale probe described
+--- in SPEC 4.4: small workloads skip sorting entirely.
+---
+--- Returns the material-bearing sources plus a flag for whether any construction
+--- work at all exists nearby. Deconstruction counts as work but consumes no
+--- materials, so it must be tracked separately from the needs table.
 ---@param surface LuaSurface
 ---@param position MapPosition
 ---@param radius number
 ---@param force LuaForce
----@return LuaEntity[]
+---@return LuaEntity[] sources, boolean has_work
 local gather_sources = function(surface, position, radius, force)
   local base_filter = {
     position = position,
@@ -70,7 +101,7 @@ local gather_sources = function(surface, position, radius, force)
     type = GHOST_TYPES,
   }
 
-  local limit = settings.global["vsi-max-ghosts"].value
+  local limit = util.global_setting("vsi-max-ghosts", 5000)
   local total = surface.count_entities_filtered(base_filter)
   local entities = surface.find_entities_filtered(base_filter)
 
@@ -85,7 +116,18 @@ local gather_sources = function(surface, position, radius, force)
   end
   total = total + #upgrades
 
-  if total <= limit then return entities end
+  -- Deconstruction needs robots but no materials, and trees/rocks are not owned
+  -- by the player force, so the force filter must be omitted here.
+  local has_deconstruction = surface.count_entities_filtered({
+    position = position,
+    radius = radius,
+    to_be_deconstructed = true,
+    limit = 1,
+  }) > 0
+
+  local has_work = total > 0 or has_deconstruction
+
+  if total <= limit then return entities, has_work end
 
   table.sort(entities, function(a, b)
     return util.dist_sq(a.position, position) < util.dist_sq(b.position, position)
@@ -95,7 +137,7 @@ local gather_sources = function(surface, position, radius, force)
   for index = 1, limit do
     trimmed[index] = entities[index]
   end
-  return trimmed
+  return trimmed, has_work
 end
 
 --- Computes what the trunk is still missing to satisfy nearby build orders.
@@ -108,7 +150,7 @@ end
 ---@return table needs keyed by item_key
 needs.scan = function(player, vehicle, trunk, radius)
   local required = {}
-  local sources = gather_sources(vehicle.surface, vehicle.position, radius, vehicle.force)
+  local sources, has_work = gather_sources(vehicle.surface, vehicle.position, radius, vehicle.force)
 
   for _, entity in pairs(sources) do
     if entity.valid then
@@ -123,18 +165,45 @@ needs.scan = function(player, vehicle, trunk, radius)
     end
   end
 
+  collect_cliffs(vehicle.surface, vehicle.position, radius, required)
+
   for key, entry in pairs(required) do
     local present = trunk.get_item_count({ name = entry.name, quality = entry.quality })
     util.subtract_item(required, key, present)
   end
 
-  -- Only lend robots when there is work to do, so an idle vehicle never drains
-  -- the player's stock.
-  if next(required) and player.mod_settings["vsi-share-robots"].value then
+  -- Gated on work existing rather than on materials being missing: deconstruction
+  -- orders need robots while requiring nothing from the needs table.
+  if has_work and util.setting(player, "vsi-share-robots", true) then
     robots.add_needs(player, vehicle, trunk, required)
   end
 
   return required
+end
+
+--- Whether any construction work exists near the vehicle, including
+--- deconstruction orders that require no materials.
+---@param vehicle LuaEntity
+---@param radius number
+---@return boolean has_ghosts, boolean has_deconstruction
+needs.probe_work = function(vehicle, radius)
+  local surface = vehicle.surface
+  local ghosts = surface.count_entities_filtered({
+    position = vehicle.position,
+    radius = radius,
+    force = vehicle.force,
+    type = GHOST_TYPES,
+    limit = 1,
+  }) > 0
+
+  local deconstruction = surface.count_entities_filtered({
+    position = vehicle.position,
+    radius = radius,
+    to_be_deconstructed = true,
+    limit = 1,
+  }) > 0
+
+  return ghosts, deconstruction
 end
 
 return needs
