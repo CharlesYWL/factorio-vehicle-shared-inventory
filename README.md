@@ -11,7 +11,7 @@ Building from inside a spidertron (or car, or tank) is awkward: construction rob
 - **Automatic resupply** — scans entity ghosts, **tile ghosts**, module requests and upgrade orders within the vehicle's construction radius, and transfers only what is actually missing.
 - **Cliff explosives** — cliffs marked for deconstruction are neutral-force entities with no ghost, so they are detected separately and the required explosive is supplied.
 - **Robot sharing** — lends construction robots from your inventory up to the vehicle's roboport capacity, triggered by construction *or* deconstruction work nearby, so an idle vehicle never drains your stock. Highest quality first.
-- **Overflow reclaim** — when the trunk runs low on free slots, deconstruction spoils are moved back into your inventory so mining does not stall. Only item types you already carry are taken, and ammo, fuel and robots are never reclaimed.
+- **Overflow reclaim** — when the trunk runs low on free slots, deconstruction spoils above a boarding baseline are moved back into your inventory so mining does not stall. Only item types you already carry are taken, and ammo, fuel, robots and currently needed materials are never reclaimed.
 - **Ledger-based return** — on exit, only the items this mod lent are returned. **The vehicle's own stock is never taken.**
 - **Quality aware** — items of different qualities are tracked separately and never merged.
 - **Broad vehicle support** — spidertrons, cars and tanks, matched by prototype type so modded vehicles work automatically.

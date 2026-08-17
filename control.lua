@@ -11,6 +11,7 @@ local init_storage = function()
   storage.tracked_players = storage.tracked_players or {}
   storage.cache = storage.cache or {}
   storage.ledger = storage.ledger or {}
+  storage.baseline = storage.baseline or {}
 end
 
 ---@param player_index number
@@ -30,7 +31,24 @@ local track_player = function(player_index)
   local cache = cache_for(player_index)
   cache.dirty = true
   cache.needs = nil
+  cache.protected_keys = nil
   cache.last_vehicle_pos = nil
+
+  local player = game.get_player(player_index)
+  if not player then return end
+  local trunk = eligibility.trunk_of(player.vehicle)
+  if trunk then
+    transfer.capture_baseline(player_index, trunk)
+  end
+end
+
+--- Forgets a player entirely: tracking, cache, ledger and boarding baseline.
+---@param player_index number
+local forget_player = function(player_index)
+  storage.tracked_players[player_index] = nil
+  storage.cache[player_index] = nil
+  transfer.clear_ledger(player_index)
+  transfer.clear_baseline(player_index)
 end
 
 --- Reconciles the tracked set against reality. The driving event never fires for
@@ -38,14 +56,22 @@ end
 --- the set cannot be event-driven alone.
 local reconcile_tracked = function()
   for _, player in pairs(game.connected_players) do
-    local in_vehicle = player.vehicle ~= nil and player.vehicle.valid
+    local vehicle = player.vehicle
+    local in_vehicle = vehicle ~= nil and vehicle.valid
     local tracked = storage.tracked_players[player.index] == true
 
     if in_vehicle and not tracked then
       track_player(player.index)
     elseif not in_vehicle and tracked then
-      storage.tracked_players[player.index] = nil
-      storage.cache[player.index] = nil
+      forget_player(player.index)
+    elseif in_vehicle and tracked then
+      -- A swap between vehicles can happen without a driving event pairing that
+      -- this loop would otherwise miss, leaving a baseline from the old vehicle.
+      local cache = storage.cache[player.index]
+      if cache and cache.vehicle_unit_number
+        and cache.vehicle_unit_number ~= vehicle.unit_number then
+        track_player(player.index)
+      end
     end
   end
 end
@@ -85,7 +111,7 @@ local service_player = function(player)
   local cache = cache_for(player.index)
 
   if needs_rescan(cache, vehicle, radius) then
-    cache.needs = needs.scan(player, vehicle, trunk, radius)
+    cache.needs, cache.protected_keys = needs.scan(player, vehicle, trunk, radius)
     cache.dirty = false
     cache.last_scan_tick = game.tick
     cache.vehicle_unit_number = vehicle.unit_number
@@ -94,14 +120,15 @@ local service_player = function(player)
   end
 
   if next(cache.needs) then
-    transfer.push(player, trunk, cache.needs)
-    -- Pushed amounts are now in the trunk, so the snapshot must be recomputed
-    -- before it is trusted again.
-    cache.dirty = true
+    -- Only invalidate when something actually moved. Marking dirty on every pass
+    -- with an unsatisfiable need would force a full rescan forever.
+    if transfer.push(player, trunk, cache.needs) then
+      cache.dirty = true
+    end
   end
 
   if util.setting(player, "vsi-return-overflow", true) then
-    transfer.pull_overflow(player, trunk, cache.needs)
+    transfer.pull_overflow(player, trunk, cache.protected_keys or {})
   end
 end
 
@@ -147,15 +174,12 @@ local on_driving_changed = function(event)
   if current_vehicle and current_vehicle.valid then
     track_player(event.player_index)
   else
-    storage.tracked_players[event.player_index] = nil
-    storage.cache[event.player_index] = nil
+    forget_player(event.player_index)
   end
 end
 
 local on_player_died = function(event)
-  transfer.clear_ledger(event.player_index)
-  storage.tracked_players[event.player_index] = nil
-  storage.cache[event.player_index] = nil
+  forget_player(event.player_index)
 end
 
 local on_entity_died = function(event)
@@ -166,9 +190,7 @@ local on_entity_died = function(event)
   for player_index in pairs(storage.tracked_players) do
     local cache = storage.cache[player_index]
     if cache and cache.vehicle_unit_number == entity.unit_number then
-      transfer.clear_ledger(player_index)
-      storage.tracked_players[player_index] = nil
-      storage.cache[player_index] = nil
+      forget_player(player_index)
     end
   end
 end
@@ -180,6 +202,11 @@ end)
 
 script.on_configuration_changed(function()
   init_storage()
+  -- Existing saves have no baselines, and without one overflow reclaim cannot
+  -- tell the vehicle's own stock apart from spoils. Re-tracking captures it.
+  for player_index in pairs(storage.tracked_players) do
+    storage.tracked_players[player_index] = nil
+  end
   reconcile_tracked()
 end)
 
@@ -209,6 +236,8 @@ local dirty_events = {
   defines.events.on_cancelled_deconstruction,
   defines.events.on_player_mined_entity,
   defines.events.on_robot_mined_entity,
+  defines.events.on_player_mined_tile,
+  defines.events.on_robot_mined_tile,
   defines.events.script_raised_built,
   defines.events.script_raised_revive,
   defines.events.script_raised_destroy,
@@ -273,6 +302,15 @@ commands.add_command("vsi-debug", "Vehicle Shared Inventory diagnostics", functi
   say("trunk: " .. trunk.count_empty_stacks() .. " free of " .. #trunk .. " slots")
 
   local required = needs.scan(player, vehicle, trunk, resolved_radius)
+  local baseline = storage.baseline[player.index]
+  local baseline_types = 0
+  if baseline then
+    for _ in pairs(baseline) do baseline_types = baseline_types + 1 end
+    say("boarding baseline: " .. baseline_types .. " item types protected")
+  else
+    say("boarding baseline: NONE")
+  end
+
   local lines = 0
   for _, entry in pairs(required) do
     say("  missing " .. entry.name .. " [" .. entry.quality .. "] x" .. entry.count)

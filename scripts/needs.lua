@@ -56,13 +56,15 @@ local collect_upgrade = function(entity, out)
 end
 
 --- Cliffs marked for deconstruction consume explosives rather than being mined.
---- They are neutral-force entities, so they need their own unfiltered query, and
---- the required item comes from the cliff prototype rather than from a ghost.
+--- They are neutral-force entities, so the query cannot filter by force; instead
+--- each hit is checked against the vehicle's own force so one player's vehicle
+--- never services another force's orders.
 ---@param surface LuaSurface
 ---@param position MapPosition
 ---@param radius number
 ---@param out table
-local collect_cliffs = function(surface, position, radius, out)
+---@param force LuaForce
+local collect_cliffs = function(surface, position, radius, out, force)
   local cliffs = surface.find_entities_filtered({
     position = position,
     radius = radius,
@@ -71,7 +73,7 @@ local collect_cliffs = function(surface, position, radius, out)
   })
 
   for _, cliff in pairs(cliffs) do
-    if cliff.valid then
+    if cliff.valid and cliff.is_registered_for_deconstruction(force) then
       local explosive = cliff.prototype.cliff_explosive_prototype
       if explosive then
         util.add_item(out, explosive, "normal", 1)
@@ -80,8 +82,38 @@ local collect_cliffs = function(surface, position, radius, out)
   end
 end
 
---- Gathers build sources around the vehicle, applying the scale probe described
---- in SPEC 4.4: small workloads skip sorting entirely.
+--- Whether any deconstruction order near the position belongs to the given force.
+--- Trees, rocks and cliffs are neutral-force entities, so the query itself cannot
+--- be force-filtered and each candidate must be checked individually.
+---@param surface LuaSurface
+---@param position MapPosition
+---@param radius number
+---@param force LuaForce
+---@return boolean
+local has_deconstruction_for = function(surface, position, radius, force)
+  local candidates = surface.find_entities_filtered({
+    position = position,
+    radius = radius,
+    to_be_deconstructed = true,
+  })
+
+  for _, entity in pairs(candidates) do
+    if entity.valid and entity.is_registered_for_deconstruction(force) then
+      return true
+    end
+  end
+
+  -- Tiles marked for deconstruction (concrete, bricks) are a separate query and
+  -- also count as work needing robots.
+  local tiles = surface.find_tiles_filtered({
+    position = position,
+    radius = radius,
+    to_be_deconstructed = true,
+    limit = 1,
+  })
+  return #tiles > 0
+end
+
 --- Gathers build sources around the vehicle, applying the scale probe described
 --- in SPEC 4.4: small workloads skip sorting entirely.
 ---
@@ -116,14 +148,10 @@ local gather_sources = function(surface, position, radius, force)
   end
   total = total + #upgrades
 
-  -- Deconstruction needs robots but no materials, and trees/rocks are not owned
-  -- by the player force, so the force filter must be omitted here.
-  local has_deconstruction = surface.count_entities_filtered({
-    position = position,
-    radius = radius,
-    to_be_deconstructed = true,
-    limit = 1,
-  }) > 0
+  -- Deconstruction needs robots but no materials. It cannot be force-filtered in
+  -- the query because trees, rocks and cliffs are neutral, so each candidate is
+  -- checked against this force individually.
+  local has_deconstruction = has_deconstruction_for(surface, position, radius, force)
 
   local has_work = total > 0 or has_deconstruction
 
@@ -148,6 +176,19 @@ end
 ---@param trunk LuaInventory
 ---@param radius number
 ---@return table needs keyed by item_key
+--- Computes what the trunk is still missing to satisfy nearby build orders.
+--- Robots are appended after the material subtraction because their shortfall is
+--- computed against roboport capacity, not against ghost requirements.
+---
+--- Also returns the set of item keys construction needs *in full*, before the
+--- trunk stock is subtracted. Overflow reclaim must consult that full set: the
+--- shortfall alone would mark already-satisfied materials as reclaimable, so
+--- they would be pulled out and pushed back forever.
+---@param player LuaPlayer
+---@param vehicle LuaEntity
+---@param trunk LuaInventory
+---@param radius number
+---@return table needs keyed by item_key, table protected_keys
 needs.scan = function(player, vehicle, trunk, radius)
   local required = {}
   local sources, has_work = gather_sources(vehicle.surface, vehicle.position, radius, vehicle.force)
@@ -165,7 +206,12 @@ needs.scan = function(player, vehicle, trunk, radius)
     end
   end
 
-  collect_cliffs(vehicle.surface, vehicle.position, radius, required)
+  collect_cliffs(vehicle.surface, vehicle.position, radius, required, vehicle.force)
+
+  local protected_keys = {}
+  for key in pairs(required) do
+    protected_keys[key] = true
+  end
 
   for key, entry in pairs(required) do
     local present = trunk.get_item_count({ name = entry.name, quality = entry.quality })
@@ -178,7 +224,7 @@ needs.scan = function(player, vehicle, trunk, radius)
     robots.add_needs(player, vehicle, trunk, required)
   end
 
-  return required
+  return required, protected_keys
 end
 
 --- Whether any construction work exists near the vehicle, including
@@ -196,12 +242,7 @@ needs.probe_work = function(vehicle, radius)
     limit = 1,
   }) > 0
 
-  local deconstruction = surface.count_entities_filtered({
-    position = vehicle.position,
-    radius = radius,
-    to_be_deconstructed = true,
-    limit = 1,
-  }) > 0
+  local deconstruction = has_deconstruction_for(surface, vehicle.position, radius, vehicle.force)
 
   return ghosts, deconstruction
 end

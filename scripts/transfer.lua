@@ -37,11 +37,13 @@ end
 ---@param player LuaPlayer
 ---@param trunk LuaInventory
 ---@param required table
+---@return boolean moved_anything
 transfer.push = function(player, trunk, required)
   local character_inventory = player.get_main_inventory()
-  if not (character_inventory and character_inventory.valid) then return end
+  if not (character_inventory and character_inventory.valid) then return false end
 
   local ledger = ledger_for(player.index)
+  local moved_anything = false
 
   for _, entry in pairs(util.sorted_needs(required)) do
     local stack_id = { name = entry.name, quality = entry.quality }
@@ -54,6 +56,7 @@ transfer.push = function(player, trunk, required)
       if inserted > 0 then
         character_inventory.remove({ name = entry.name, quality = entry.quality, count = inserted })
         util.add_item(ledger, entry.name, entry.quality, inserted)
+        moved_anything = true
       end
 
       if inserted < amount then
@@ -61,6 +64,8 @@ transfer.push = function(player, trunk, required)
       end
     end
   end
+
+  return moved_anything
 end
 
 --- Returns only what this mod lent out, never the vehicle's own stock.
@@ -87,22 +92,23 @@ transfer.return_borrowed = function(player, vehicle)
   if not (character_inventory and character_inventory.valid) then return end
 
   for _, entry in pairs(ledger) do
-    local stack_id = { name = entry.name, quality = entry.quality }
-
     if robots.is_robot_item(entry.name) then
       robots.recall_to_trunk(vehicle, trunk, entry.name, entry.quality, entry.count)
     end
 
-    local returnable = math.min(entry.count, trunk.get_item_count(stack_id))
+    local remaining = entry.count
 
-    if returnable > 0 then
-      local moved = character_inventory.insert({
-        name = entry.name,
-        quality = entry.quality,
-        count = returnable,
-      })
-      if moved > 0 then
-        trunk.remove({ name = entry.name, quality = entry.quality, count = moved })
+    -- Moved stack by stack so durability, spoilage and nested contents survive.
+    for index = 1, #trunk do
+      if remaining <= 0 then break end
+
+      local stack = trunk[index]
+      if stack.valid_for_read and stack.name == entry.name then
+        local quality = stack.quality and stack.quality.name or "normal"
+        if quality == entry.quality and stack.count <= remaining then
+          local moved = util.move_stack(stack, character_inventory)
+          remaining = remaining - moved
+        end
       end
     end
   end
@@ -114,15 +120,32 @@ transfer.clear_ledger = function(player_index)
   storage.ledger[player_index] = nil
 end
 
---- Items the vehicle needs for its own operation, which must never be pulled
---- back into the player inventory.
+--- Snapshot of what the trunk held when the player boarded. Anything at or below
+--- this level is the vehicle's own stock and must never be reclaimed; only the
+--- surplus above it can be deconstruction spoils.
+---@param player_index number
+---@param trunk LuaInventory
+transfer.capture_baseline = function(player_index, trunk)
+  local baseline = {}
+  for _, item in pairs(trunk.get_contents()) do
+    util.add_item(baseline, item.name, item.quality, item.count)
+  end
+  storage.baseline[player_index] = baseline
+end
+
+---@param player_index number
+transfer.clear_baseline = function(player_index)
+  storage.baseline[player_index] = nil
+end
+
+--- Items that must never be pulled back into the player inventory.
 ---@param name string
 ---@param quality string
----@param required table
+---@param protected_keys table
 ---@return boolean
-local is_protected = function(name, quality, required)
+local is_protected = function(name, quality, protected_keys)
   if robots.is_robot_item(name) then return true end
-  if required[util.item_key(name, quality)] then return true end
+  if protected_keys[util.item_key(name, quality)] then return true end
 
   local prototype = prototypes.item[name]
   if not prototype then return false end
@@ -130,43 +153,74 @@ local is_protected = function(name, quality, required)
   return prototype.type == "ammo" or prototype.fuel_value > 0
 end
 
+--- How many of an item may be reclaimed: the amount above the boarding baseline,
+--- capped by what the player already carries being non-zero.
+---@param player_index number
+---@param name string
+---@param quality string
+---@param present number
+---@return number
+local reclaimable_count = function(player_index, name, quality, present)
+  local baseline = storage.baseline[player_index]
+  if not baseline then return 0 end
+
+  local reserved = baseline[util.item_key(name, quality)]
+  return present - (reserved and reserved.count or 0)
+end
+
 --- Moves deconstruction spoils back to the player once the trunk is running out
---- of room, so mining does not stall. Only item types the player already carries
---- are taken, which keeps the character inventory from filling with junk.
+--- of room, so mining does not stall.
+---
+--- Three separate guards keep this from stealing: the boarding baseline protects
+--- the vehicle's original stock, `protected_keys` covers everything construction
+--- still needs, and the loop stops as soon as enough space has been freed.
 ---@param player LuaPlayer
 ---@param trunk LuaInventory
----@param required table currently needed items, which are never pulled back
-transfer.pull_overflow = function(player, trunk, required)
+---@param protected_keys table item keys that construction still needs
+transfer.pull_overflow = function(player, trunk, protected_keys)
   local threshold = util.setting(player, "vsi-overflow-threshold", 20) / 100
-  local free = trunk.count_empty_stacks()
-  if free > math.ceil(#trunk * threshold) then return end
+  local wanted_free = math.ceil(#trunk * threshold)
+  if trunk.count_empty_stacks(true) > wanted_free then return end
 
   local character_inventory = player.get_main_inventory()
   if not (character_inventory and character_inventory.valid) then return end
-  if character_inventory.count_empty_stacks() == 0 then return end
 
+  local ledger = storage.ledger[player.index]
+
+  -- Budgets are computed up front because moving stacks mutates the inventory
+  -- underneath us, making a live get_item_count unreliable mid-loop.
+  local budget = {}
   for _, item in pairs(trunk.get_contents()) do
     local quality = item.quality or "normal"
+    local key = util.item_key(item.name, quality)
 
-    if not is_protected(item.name, quality, required) then
-      local stack_id = { name = item.name, quality = quality }
+    if not is_protected(item.name, quality, protected_keys)
+      and character_inventory.get_item_count({ name = item.name, quality = quality }) > 0
+    then
+      local allowed = reclaimable_count(player.index, item.name, quality, item.count)
+      if allowed > 0 then budget[key] = allowed end
+    end
+  end
 
-      -- Only reclaim types the player already carries: this is what stops the
-      -- character inventory from being flooded with unrelated salvage.
-      if character_inventory.get_item_count(stack_id) > 0 then
-        local moved = character_inventory.insert({
-          name = item.name,
-          quality = quality,
-          count = item.count,
-        })
+  if not next(budget) then return end
+
+  for index = 1, #trunk do
+    if trunk.count_empty_stacks(true) > wanted_free then break end
+
+    local stack = trunk[index]
+    if stack.valid_for_read then
+      local quality = stack.quality and stack.quality.name or "normal"
+      local key = util.item_key(stack.name, quality)
+      local allowed = budget[key]
+
+      -- Whole stacks only. Splitting a stack would mean rebuilding part of it
+      -- from name/count, which discards durability, spoilage and other state.
+      if allowed and allowed >= stack.count then
+        local moved = util.move_stack(stack, character_inventory)
         if moved > 0 then
-          trunk.remove({ name = item.name, quality = quality, count = moved })
-
-          -- Returning early cancels part of the debt, otherwise exiting the
-          -- vehicle would try to reclaim items that are already back.
-          local ledger = storage.ledger[player.index]
+          budget[key] = allowed - moved
           if ledger then
-            util.subtract_item(ledger, util.item_key(item.name, quality), moved)
+            util.subtract_item(ledger, key, moved)
           end
         end
       end

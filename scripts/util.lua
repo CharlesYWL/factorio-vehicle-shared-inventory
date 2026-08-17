@@ -107,4 +107,25 @@ util.global_setting = function(name, fallback)
   return setting.value
 end
 
+--- Moves a stack between inventories while preserving per-item state such as
+--- durability, spoilage progress, blueprint contents and nested inventories.
+--- Rebuilding items from name/quality/count would silently destroy all of it.
+---@param source LuaItemStack
+---@param target LuaInventory
+---@return number moved
+util.move_stack = function(source, target)
+  if not (source and source.valid_for_read) then return 0 end
+
+  local available = source.count
+  local inserted = target.insert(source)
+  if inserted <= 0 then return 0 end
+
+  if inserted >= available then
+    source.clear()
+  else
+    source.count = available - inserted
+  end
+  return inserted
+end
+
 return util
