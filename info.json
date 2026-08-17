@@ -1,0 +1,11 @@
+{
+  "name": "vehicle-shared-inventory",
+  "version": "0.1.0",
+  "title": "Vehicle Shared Inventory",
+  "author": "CharlesYWL",
+  "factorio_version": "2.0",
+  "dependencies": [
+    "base >= 2.0.0"
+  ],
+  "description": "Automatically feeds construction materials from your character inventory into the trunk of the vehicle you are riding, so personal construction robots can build without you leaving the vehicle. Borrowed items are returned when you exit."
+}

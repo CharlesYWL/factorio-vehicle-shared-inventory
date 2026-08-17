@@ -1,0 +1,11 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.1.0
+Date: 2026-08-16
+  Features:
+    - Automatically moves construction materials from the character inventory into the trunk of the
+      vehicle being ridden, so personal construction robots can build without leaving the vehicle
+    - Supports spidertrons, cars and tanks (including modded vehicles of those prototype types)
+    - Handles entity ghosts, tile ghosts, item request proxies and upgrade orders
+    - Quality aware: items of different qualities are tracked separately
+    - Borrowed items are returned when leaving the vehicle; the vehicle's own stock is never taken
+    - Per-player settings for update interval, return-on-exit and roboport requirement
