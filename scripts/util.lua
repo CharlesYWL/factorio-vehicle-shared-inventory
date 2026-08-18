@@ -141,6 +141,13 @@ end
 --- the items from scratch and silently resets durability, spoilage and tags.
 --- Shrinking the stack first makes the engine copy the real item, and the
 --- untouched remainder is restored afterwards.
+---
+--- Shrinking really does discard the difference for the duration of the insert.
+--- That is safe because a stack is homogeneous -- every item in it shares the
+--- same durability and spoilage -- so the restored remainder is identical to
+--- what was dropped. Items carrying individual state, such as blueprints and
+--- armour, have a stack size of one and therefore always take the whole-stack
+--- path above instead.
 ---@param source LuaItemStack
 ---@param target LuaInventory
 ---@param wanted number

@@ -7,8 +7,6 @@ Date: 2026-08-17
       all came back in that very common case
     - Returning on exit is now capped by the surplus above the boarding baseline, so materials the
       robots already consumed reduce the debt instead of being made up out of the vehicle's own stock
-    - The ledger is no longer cleared before the items have actually been moved, so an interrupted
-      return no longer donates the outstanding debt to the vehicle for good
     - Items are moved instead of recreated when pushed into the trunk, so spoilage, durability and
       ammo remaining are preserved rather than silently reset
     - Construction robots are shared again while the vehicle sits inside base roboport coverage: the

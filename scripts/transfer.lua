@@ -125,6 +125,11 @@ end
 --- letting the robots spend all 50 would still hand the player 50 on exit --
 --- taken straight out of the vehicle's original stock.
 ---
+--- Settlement is final either way. A debt that cannot be paid here cannot be
+--- paid later: the vehicle is gone or the player has no character to receive the
+--- items, and carrying the balance forward would only settle one vehicle's debt
+--- against the next vehicle the player boards.
+---
 --- Robots are special only while airborne: robots waiting to be used sit in the
 --- trunk as ordinary items, but ones already flying are entities and must be
 --- recalled first. Busy robots stay with the vehicle, so the return may be
@@ -134,13 +139,9 @@ end
 transfer.return_borrowed = function(player, vehicle)
   local ledger = storage.ledger[player.index]
   if not ledger then return end
+  storage.ledger[player.index] = nil
 
-  -- Dropped only once the moves below are done. Clearing it up front meant any
-  -- early return donated the outstanding debt to the vehicle for good.
-  if not util.setting(player, "vsi-return-on-exit", true) then
-    storage.ledger[player.index] = nil
-    return
-  end
+  if not util.setting(player, "vsi-return-on-exit", true) then return end
 
   local trunk = eligibility.trunk_of(vehicle)
   if not trunk then return end
@@ -174,8 +175,6 @@ transfer.return_borrowed = function(player, vehicle)
       end
     end
   end
-
-  storage.ledger[player.index] = nil
 end
 
 --- Drops bookkeeping without moving anything (death, vehicle destroyed).
@@ -247,7 +246,8 @@ transfer.pull_overflow = function(player, trunk, protected_keys)
   -- Both defaults are wrong here: the bar blocks robots from filling a slot, and
   -- a filtered slot only accepts its own item. Counting either as free space
   -- hides a trunk that is, for mining purposes, already full.
-  if trunk.count_empty_stacks(false, false) > wanted_free then return end
+  local free = trunk.count_empty_stacks(false, false)
+  if free > wanted_free then return end
 
   local character_inventory = player.get_main_inventory()
   if not (character_inventory and character_inventory.valid) then return end
@@ -271,8 +271,14 @@ transfer.pull_overflow = function(player, trunk, protected_keys)
 
   if not next(budget) then return end
 
+  -- Asked once: an inventory that supports no filters can skip the per-slot
+  -- lookup entirely.
+  local filtered_slots = trunk.is_filtered()
+
   for index = 1, #trunk do
-    if trunk.count_empty_stacks(false, false) > wanted_free then break end
+    -- Tracked incrementally rather than re-counted per slot: the count is a scan
+    -- of the whole inventory, so asking once per slot is quadratic.
+    if free > wanted_free then break end
 
     local stack = trunk[index]
     if stack.valid_for_read then
@@ -286,6 +292,13 @@ transfer.pull_overflow = function(player, trunk, protected_keys)
           budget[key] = allowed - moved
           if ledger then
             util.subtract_item(ledger, key, moved)
+          end
+          -- Only a fully drained slot frees space, and a filtered one stays
+          -- unusable for anything else, matching how the count was taken.
+          if not stack.valid_for_read
+            and not (filtered_slots and trunk.get_filter(index))
+          then
+            free = free + 1
           end
         end
       end
