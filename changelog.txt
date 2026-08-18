@@ -1,5 +1,5 @@
 ---------------------------------------------------------------------------------------------------
-Version: 0.1.1
+Version: 0.2.0
 Date: 2026-08-17
   Bugfixes:
     - Borrowed items are now returned even when the trunk already held the same item. Insert merges
