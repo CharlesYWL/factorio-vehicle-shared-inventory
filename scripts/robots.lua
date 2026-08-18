@@ -47,10 +47,27 @@ robots.capacity = function(vehicle)
   return total
 end
 
---- Robots already available to the vehicle: everything its logistic network owns
---- (docked, flying or charging) plus any still sitting loose in the trunk.
---- Counting the whole network matters because robots that are out building are
---- not docked, and a naive docked-only count would keep topping the vehicle up.
+--- True when the given cell is the only member of its network, i.e. the vehicle
+--- really owns every robot the network reports.
+---
+--- A vehicle parked inside base roboport coverage merges into the base network,
+--- whose robots have nothing to do with this vehicle. Trusting the network-wide
+--- numbers there both suppresses sharing (the count looks enormous) and lets the
+--- recall path destroy base robots.
+---@param cell LuaLogisticCell
+---@return LuaLogisticNetwork|nil
+local exclusive_network = function(cell)
+  local network = cell.logistic_network
+  if not (network and network.valid) then return nil end
+  local cells = network.cells
+  if cells and #cells > 1 then return nil end
+  return network
+end
+
+--- Robots already available to the vehicle: everything its own logistic network
+--- owns (docked, flying or charging) plus any still sitting loose in the trunk.
+--- Counting flying robots matters because robots that are out building are not
+--- docked, and a naive docked-only count would keep topping the vehicle up.
 ---@param vehicle LuaEntity
 ---@param trunk LuaInventory
 ---@return number
@@ -59,8 +76,8 @@ robots.present = function(vehicle, trunk)
 
   local cell = vehicle.logistic_cell
   if cell and cell.valid then
-    local network = cell.logistic_network
-    if network and network.valid then
+    local network = exclusive_network(cell)
+    if network then
       total = total + network.all_construction_robots
     else
       total = total + cell.stationed_construction_robot_count
@@ -105,6 +122,23 @@ robots.available_in_inventory = function(player)
   return found
 end
 
+--- Robots this mod has already lent to the current vehicle. Read straight from
+--- the ledger because the docked-robot count cannot see robots that are out
+--- flying: without this cap, every pass would look like the vehicle is empty and
+--- would drain the player's whole stock.
+---@param player LuaPlayer
+---@return number
+local already_lent = function(player)
+  local ledger = storage.ledger and storage.ledger[player.index]
+  if not ledger then return 0 end
+
+  local total = 0
+  for _, entry in pairs(ledger) do
+    if get_robot_items()[entry.name] then total = total + entry.count end
+  end
+  return total
+end
+
 --- Adds a robot shortfall into the needs table. Only called when there is actual
 --- construction work nearby, so idle vehicles never drain the player's robots.
 ---@param player LuaPlayer
@@ -115,7 +149,10 @@ robots.add_needs = function(player, vehicle, trunk, required)
   local capacity = robots.capacity(vehicle)
   if capacity <= 0 then return end
 
-  local shortfall = capacity - robots.present(vehicle, trunk)
+  local shortfall = math.min(
+    capacity - robots.present(vehicle, trunk),
+    capacity - already_lent(player)
+  )
   if shortfall <= 0 then return end
 
   for _, entry in pairs(robots.available_in_inventory(player)) do
@@ -138,6 +175,10 @@ end
 --- normal return path can move them to the player. Only robots that are docked
 --- and doing nothing are taken: ones in flight or carrying cargo are left alone
 --- so no in-progress work or held item is destroyed.
+---
+--- Skipped entirely while the vehicle shares a network with other roboports:
+--- `network.robots` would then also list the base's robots, and recalling those
+--- would quietly delete them from the base.
 ---@param vehicle LuaEntity
 ---@param trunk LuaInventory
 ---@param name string
@@ -154,8 +195,8 @@ robots.recall_to_trunk = function(vehicle, trunk, name, quality, wanted)
   local cell = vehicle.logistic_cell
   if not (cell and cell.valid) then return end
 
-  local network = cell.logistic_network
-  if not (network and network.valid) then return end
+  local network = exclusive_network(cell)
+  if not network then return end
 
   for _, robot in pairs(network.robots or {}) do
     if missing <= 0 then break end
@@ -168,10 +209,15 @@ robots.recall_to_trunk = function(vehicle, trunk, name, quality, wanted)
 
       if robot_quality == quality and is_idle and is_empty then
         local inserted = trunk.insert({ name = name, quality = quality, count = 1 })
-        if inserted > 0 then
-          robot.destroy()
+        if inserted <= 0 then break end
+
+        -- Destroy can refuse. Rolling the item back keeps the two halves of the
+        -- swap atomic: the alternative orders either duplicate the robot or
+        -- delete it when the trunk turns out to be full.
+        if robot.destroy() then
           missing = missing - 1
         else
+          trunk.remove({ name = name, quality = quality, count = inserted })
           break
         end
       end

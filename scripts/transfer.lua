@@ -32,8 +32,33 @@ local warn_trunk_full = function(player)
   })
 end
 
+--- Slot indices of an inventory grouped by item key, built in a single pass so
+--- that pushing many item types does not rescan the whole inventory each time.
+---@param inventory LuaInventory
+---@return table<string, number[]>
+local index_slots = function(inventory)
+  local slots = {}
+  for index = 1, #inventory do
+    local stack = inventory[index]
+    if stack.valid_for_read then
+      local key = util.item_key(stack.name, stack.quality and stack.quality.name or "normal")
+      local list = slots[key]
+      if not list then
+        list = {}
+        slots[key] = list
+      end
+      list[#list + 1] = index
+    end
+  end
+  return slots
+end
+
 --- Moves missing materials from the character into the vehicle trunk and books
 --- every moved item into the ledger so it can be returned later.
+---
+--- Stacks are moved rather than recreated from name/count: rebuilding would
+--- reset spoilage, durability and ammo remaining, which both destroys item state
+--- and hands out a free refresh on anything that spoils.
 ---@param player LuaPlayer
 ---@param trunk LuaInventory
 ---@param required table
@@ -44,24 +69,46 @@ transfer.push = function(player, trunk, required)
 
   local ledger = ledger_for(player.index)
   local moved_anything = false
+  local slots = index_slots(character_inventory)
 
   for _, entry in pairs(util.sorted_needs(required)) do
-    local stack_id = { name = entry.name, quality = entry.quality }
-    local available = character_inventory.get_item_count(stack_id)
+    local indices = slots[util.item_key(entry.name, entry.quality)]
 
-    if available > 0 then
-      local amount = math.min(entry.count, available)
-      local inserted = trunk.insert({ name = entry.name, quality = entry.quality, count = amount })
+    if indices then
+      local remaining = entry.count
+      local trunk_full = false
 
-      if inserted > 0 then
-        character_inventory.remove({ name = entry.name, quality = entry.quality, count = inserted })
-        util.add_item(ledger, entry.name, entry.quality, inserted)
-        moved_anything = true
+      for _, index in pairs(indices) do
+        if remaining <= 0 then break end
+
+        local stack = character_inventory[index]
+        -- Re-checked rather than trusted: the index was built before any moves,
+        -- and booking the wrong item into the ledger would hand back something
+        -- that was never lent.
+        local matches = stack.valid_for_read
+          and stack.name == entry.name
+          and (stack.quality and stack.quality.name or "normal") == entry.quality
+
+        if matches then
+          local wanted = math.min(remaining, stack.count)
+          local moved = util.move_amount(stack, trunk, remaining)
+
+          if moved > 0 then
+            util.add_item(ledger, entry.name, entry.quality, moved)
+            remaining = remaining - moved
+            moved_anything = true
+          end
+
+          -- A short move means the trunk ran out of room, not that the player
+          -- ran out of items: only the former is worth warning about.
+          if moved < wanted then
+            trunk_full = true
+            break
+          end
+        end
       end
 
-      if inserted < amount then
-        warn_trunk_full(player)
-      end
+      if trunk_full then warn_trunk_full(player) end
     end
   end
 
@@ -69,18 +116,29 @@ transfer.push = function(player, trunk, required)
 end
 
 --- Returns only what this mod lent out, never the vehicle's own stock.
---- Items already consumed by robots simply reduce the returnable amount.
 ---
---- Robots are a special case: once the roboport equipment absorbs them they are
---- no longer stack items in the trunk, so they must be recalled into the trunk
---- first. Robots that are still flying cannot be recalled and simply stay with
---- the vehicle: nothing is lost, but the return may be partial.
+--- Two independent caps apply, and the smaller wins:
+---   * the ledger, so the vehicle's own stock is never handed over;
+---   * the surplus above the boarding baseline, so materials the robots already
+---     consumed reduce the debt instead of being made up out of that stock.
+--- Without the second cap, lending 50 plates into a trunk that held 60 and then
+--- letting the robots spend all 50 would still hand the player 50 on exit --
+--- taken straight out of the vehicle's original stock.
+---
+--- Settlement is final either way. A debt that cannot be paid here cannot be
+--- paid later: the vehicle is gone or the player has no character to receive the
+--- items, and carrying the balance forward would only settle one vehicle's debt
+--- against the next vehicle the player boards.
+---
+--- Robots are special only while airborne: robots waiting to be used sit in the
+--- trunk as ordinary items, but ones already flying are entities and must be
+--- recalled first. Busy robots stay with the vehicle, so the return may be
+--- partial.
 ---@param player LuaPlayer
 ---@param vehicle LuaEntity
 transfer.return_borrowed = function(player, vehicle)
   local ledger = storage.ledger[player.index]
   if not ledger then return end
-
   storage.ledger[player.index] = nil
 
   if not util.setting(player, "vsi-return-on-exit", true) then return end
@@ -91,23 +149,28 @@ transfer.return_borrowed = function(player, vehicle)
   local character_inventory = player.get_main_inventory()
   if not (character_inventory and character_inventory.valid) then return end
 
+  local baseline = storage.baseline[player.index]
+
   for _, entry in pairs(ledger) do
     if robots.is_robot_item(entry.name) then
       robots.recall_to_trunk(vehicle, trunk, entry.name, entry.quality, entry.count)
     end
 
-    local remaining = entry.count
+    local reserved = baseline and baseline[util.item_key(entry.name, entry.quality)]
+    local present = trunk.get_item_count({ name = entry.name, quality = entry.quality })
+    local remaining = math.min(entry.count, present - (reserved and reserved.count or 0))
 
-    -- Moved stack by stack so durability, spoilage and nested contents survive.
+    -- Partial stacks must be split: `insert` merges lent items into the
+    -- vehicle's existing stack, so a whole-stack-only rule would return
+    -- nothing at all whenever the trunk already held the same item.
     for index = 1, #trunk do
       if remaining <= 0 then break end
 
       local stack = trunk[index]
       if stack.valid_for_read and stack.name == entry.name then
         local quality = stack.quality and stack.quality.name or "normal"
-        if quality == entry.quality and stack.count <= remaining then
-          local moved = util.move_stack(stack, character_inventory)
-          remaining = remaining - moved
+        if quality == entry.quality then
+          remaining = remaining - util.move_amount(stack, character_inventory, remaining)
         end
       end
     end
@@ -180,7 +243,11 @@ end
 transfer.pull_overflow = function(player, trunk, protected_keys)
   local threshold = util.setting(player, "vsi-overflow-threshold", 20) / 100
   local wanted_free = math.ceil(#trunk * threshold)
-  if trunk.count_empty_stacks(true) > wanted_free then return end
+  -- Both defaults are wrong here: the bar blocks robots from filling a slot, and
+  -- a filtered slot only accepts its own item. Counting either as free space
+  -- hides a trunk that is, for mining purposes, already full.
+  local free = trunk.count_empty_stacks(false, false)
+  if free > wanted_free then return end
 
   local character_inventory = player.get_main_inventory()
   if not (character_inventory and character_inventory.valid) then return end
@@ -204,8 +271,14 @@ transfer.pull_overflow = function(player, trunk, protected_keys)
 
   if not next(budget) then return end
 
+  -- Asked once: an inventory that supports no filters can skip the per-slot
+  -- lookup entirely.
+  local filtered_slots = trunk.is_filtered()
+
   for index = 1, #trunk do
-    if trunk.count_empty_stacks(true) > wanted_free then break end
+    -- Tracked incrementally rather than re-counted per slot: the count is a scan
+    -- of the whole inventory, so asking once per slot is quadratic.
+    if free > wanted_free then break end
 
     local stack = trunk[index]
     if stack.valid_for_read then
@@ -213,14 +286,19 @@ transfer.pull_overflow = function(player, trunk, protected_keys)
       local key = util.item_key(stack.name, quality)
       local allowed = budget[key]
 
-      -- Whole stacks only. Splitting a stack would mean rebuilding part of it
-      -- from name/count, which discards durability, spoilage and other state.
-      if allowed and allowed >= stack.count then
-        local moved = util.move_stack(stack, character_inventory)
+      if allowed and allowed > 0 then
+        local moved = util.move_amount(stack, character_inventory, allowed)
         if moved > 0 then
           budget[key] = allowed - moved
           if ledger then
             util.subtract_item(ledger, key, moved)
+          end
+          -- Only a fully drained slot frees space, and a filtered one stays
+          -- unusable for anything else, matching how the count was taken.
+          if not stack.valid_for_read
+            and not (filtered_slots and trunk.get_filter(index))
+          then
+            free = free + 1
           end
         end
       end

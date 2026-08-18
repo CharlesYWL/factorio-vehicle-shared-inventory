@@ -1,4 +1,39 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.2.0
+Date: 2026-08-17
+  Bugfixes:
+    - Borrowed items are now returned even when the trunk already held the same item. Insert merges
+      the lent items into the existing stack, and the whole-stack-only return rule meant nothing at
+      all came back in that very common case
+    - Returning on exit is now capped by the surplus above the boarding baseline, so materials the
+      robots already consumed reduce the debt instead of being made up out of the vehicle's own stock
+    - Items are moved instead of recreated when pushed into the trunk, so spoilage, durability and
+      ammo remaining are preserved rather than silently reset
+    - Construction robots are shared again while the vehicle sits inside base roboport coverage: the
+      robot count is no longer taken from the merged base network
+    - Recalling robots on exit no longer destroys robots belonging to a shared base network, and a
+      refused destroy no longer duplicates a robot
+    - Robot lending is capped by what the ledger says was already lent, so robots that are out flying
+      no longer read as missing and drain the player's stock
+    - Module and other insert requests recorded on entity ghosts are now supplied, instead of only
+      after the machine has been built and an item request proxy exists
+    - Ghosts that are also marked for upgrade are no longer counted twice
+    - Leaving the game while riding a vehicle returns the borrowed items instead of donating them
+    - Updating the mod now clears the stale ledger along with the baseline it was recorded against
+    - Cache, ledger and baseline of a departed player are fully released instead of leaking into the
+      save file
+    - Malformed item request payloads are ignored instead of crashing the needs scan
+    - /vsi-debug no longer errors when run from the server console
+  Optimizations:
+    - on_entity_died is filtered to vehicles, so it no longer runs for every biter, tree and rock
+    - Build and deconstruction events only invalidate the caches of vehicles near the event, instead
+      of every tracked player on the map
+    - The ghost scan no longer counts and finds the same entities twice
+  Changes:
+    - Trunk slots blocked by the inventory bar or by a slot filter no longer count as free space when
+      deciding whether to reclaim spoils
+
+---------------------------------------------------------------------------------------------------
 Version: 0.1.0
 Date: 2026-08-16
   Features:
