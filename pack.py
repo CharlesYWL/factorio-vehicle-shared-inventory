@@ -24,6 +24,7 @@ FILES = (
     "thumbnail.png",
     "LICENSE",
     "README.md",
+    "README.zh-CN.md",
 )
 
 FOLDERS = ("scripts", "locale")

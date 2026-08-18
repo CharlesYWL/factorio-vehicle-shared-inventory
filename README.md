@@ -85,6 +85,8 @@ Reports whether the player is tracked, the powered roboport radius, ghost count 
 - Train wagons are not supported.
 - Ammo and fuel slots are not resupplied.
 - Robots that are in flight or carrying cargo are not recalled on exit. They stay with the vehicle rather than being destroyed, so a return may be partial — nothing is lost.
+- Robot sharing pauses while the vehicle sits inside your base's roboport coverage. The vehicle's roboport merges into the base network there, so its robots can no longer be told apart from the base's, and touching them would mean destroying base robots.
+- Materials the robots have already consumed are not made up out of the vehicle's own stock on exit, so a return may be partial by design.
 
 See [SPEC.md](./SPEC.md) for the full design.
 

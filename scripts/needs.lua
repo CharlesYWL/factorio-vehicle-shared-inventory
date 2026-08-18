@@ -15,23 +15,47 @@ local quality_name = function(entity)
   return quality.name or "normal"
 end
 
---- item-request-proxy payload shape differs between API revisions, so both the
---- 2.0 array form and the legacy name->count dictionary are handled.
----@param proxy LuaEntity
+--- Total count carried by an insert-plan style `items` payload, which nests the
+--- amounts per target inventory slot instead of exposing a flat count.
+---@param items table
+---@return number
+local insert_plan_count = function(items)
+  if type(items) ~= "table" then return 0 end
+
+  local total = items.grid_count or 0
+  local in_inventory = items.in_inventory
+  if type(in_inventory) == "table" then
+    for _, position in pairs(in_inventory) do
+      total = total + (position.count or 1)
+    end
+  end
+  return total
+end
+
+--- Item request payloads differ between API revisions, so the flat 2.0 array
+--- form, the insert-plan form and the legacy name->count dictionary are all
+--- handled. Entity ghosts carry these too: a blueprinted machine records its
+--- modules on the ghost long before the item request proxy exists.
+---@param source LuaEntity ghost or item request proxy
 ---@param out table
-local collect_item_requests = function(proxy, out)
-  local requests = proxy.item_requests
+local collect_item_requests = function(source, out)
+  local requests = source.item_requests
   if not requests then return end
 
   for key, value in pairs(requests) do
     if type(value) == "table" then
-      local name = value.name or (value.id and value.id.name)
-      local quality = value.quality or (value.id and value.id.quality)
-      local count = value.count or value.items or 0
+      local id = value.id
+      local name = value.name or (id and id.name)
+      local quality = value.quality or (id and id.quality)
+      if type(name) == "table" then name = name.name end
       if type(quality) == "table" then quality = quality.name end
+
+      local count = value.count
+      if type(count) ~= "number" then count = insert_plan_count(value.items) end
+
       if name then util.add_item(out, name, quality, count) end
     elseif type(key) == "string" and type(value) == "number" then
-      util.add_item(out, key, quality_name(proxy), value)
+      util.add_item(out, key, quality_name(source), value)
     end
   end
 end
@@ -134,8 +158,16 @@ local gather_sources = function(surface, position, radius, force)
   }
 
   local limit = util.global_setting("vsi-max-ghosts", 5000)
-  local total = surface.count_entities_filtered(base_filter)
   local entities = surface.find_entities_filtered(base_filter)
+  local total = #entities
+
+  -- Ghosts can themselves be marked for upgrade, so the two queries overlap.
+  -- Without the guard such an entity is collected twice, and the second pass
+  -- reads it as a plain ghost and asks for the old item instead of the new one.
+  local seen = {}
+  for _, entity in pairs(entities) do
+    seen[entity.unit_number or entity] = true
+  end
 
   local upgrades = surface.find_entities_filtered({
     position = position,
@@ -144,9 +176,13 @@ local gather_sources = function(surface, position, radius, force)
     to_be_upgraded = true,
   })
   for _, entity in pairs(upgrades) do
-    entities[#entities + 1] = entity
+    local id = entity.unit_number or entity
+    if not seen[id] then
+      seen[id] = true
+      entities[#entities + 1] = entity
+      total = total + 1
+    end
   end
-  total = total + #upgrades
 
   -- Deconstruction needs robots but no materials. It cannot be force-filtered in
   -- the query because trees, rocks and cliffs are neutral, so each candidate is
@@ -196,7 +232,11 @@ needs.scan = function(player, vehicle, trunk, radius)
   for _, entity in pairs(sources) do
     if entity.valid then
       local entity_type = entity.type
-      if entity_type == "entity-ghost" or entity_type == "tile-ghost" then
+      if entity_type == "entity-ghost" then
+        collect_ghost(entity, required)
+        -- Modules and other insert requests ride along on the ghost itself.
+        collect_item_requests(entity, required)
+      elseif entity_type == "tile-ghost" then
         collect_ghost(entity, required)
       elseif entity_type == "item-request-proxy" then
         collect_item_requests(entity, required)

@@ -27,7 +27,10 @@ end
 ---@param count number
 ---@param priority boolean|nil
 util.add_item = function(tbl, name, quality, count, priority)
-  if count <= 0 then return end
+  -- Guarded rather than assumed: API payloads such as item requests have shifted
+  -- shape between revisions, and a non-number here would otherwise crash on the
+  -- comparison instead of being ignored.
+  if type(count) ~= "number" or count <= 0 then return end
   local key = util.item_key(name, quality)
   local entry = tbl[key]
   if entry then
@@ -77,7 +80,11 @@ util.sorted_needs = function(needs)
     local b_priority = b.priority and 1 or 0
     if a_priority ~= b_priority then return a_priority > b_priority end
     if a.count ~= b.count then return a.count < b.count end
-    return a.name < b.name
+    if a.name ~= b.name then return a.name < b.name end
+    -- Quality is part of the identity, so without it two entries for the same
+    -- item at different qualities compare equal and their order is left to the
+    -- input, which makes the transfer order arbitrary.
+    return (a.quality or "normal") < (b.quality or "normal")
   end)
   return list
 end
@@ -125,6 +132,29 @@ util.move_stack = function(source, target)
   else
     source.count = available - inserted
   end
+  return inserted
+end
+
+--- Moves at most `wanted` items out of a stack, preserving per-item state.
+---
+--- A partial move cannot go through `insert{ name = , count = }`: that rebuilds
+--- the items from scratch and silently resets durability, spoilage and tags.
+--- Shrinking the stack first makes the engine copy the real item, and the
+--- untouched remainder is restored afterwards.
+---@param source LuaItemStack
+---@param target LuaInventory
+---@param wanted number
+---@return number moved
+util.move_amount = function(source, target, wanted)
+  if not (source and source.valid_for_read) then return 0 end
+  if wanted <= 0 then return 0 end
+
+  local available = source.count
+  if wanted >= available then return util.move_stack(source, target) end
+
+  source.count = wanted
+  local inserted = target.insert(source)
+  source.count = available - inserted
   return inserted
 end
 

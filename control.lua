@@ -33,6 +33,9 @@ local track_player = function(player_index)
   cache.needs = nil
   cache.protected_keys = nil
   cache.last_vehicle_pos = nil
+  -- Cleared so the vehicle-swap check below cannot keep re-firing for a vehicle
+  -- this mod never services and therefore never records a unit number for.
+  cache.vehicle_unit_number = nil
 
   local player = game.get_player(player_index)
   if not player then return end
@@ -76,11 +79,58 @@ local reconcile_tracked = function()
   end
 end
 
---- Every tracked player's cache is invalidated: build orders are global and a
---- ghost created anywhere may fall inside someone's construction radius.
+--- Every tracked player's cache is invalidated. Used only when an event gives no
+--- usable location.
 local mark_all_dirty = function()
   for player_index in pairs(storage.tracked_players) do
     cache_for(player_index).dirty = true
+  end
+end
+
+--- Where a build/mine/order event happened, when it can be determined.
+---@param event table
+---@return MapPosition|nil position, number|nil surface_index
+local event_location = function(event)
+  local entity = event.entity or event.ghost
+  if entity and entity.valid then
+    return entity.position, entity.surface.index
+  end
+
+  local tiles = event.tiles
+  if tiles and tiles[1] and tiles[1].position then
+    return tiles[1].position, event.surface_index
+  end
+
+  return nil, nil
+end
+
+--- Build orders are global, but a ghost created on the far side of the map can
+--- never fall inside a vehicle's construction radius. Invalidating every cache
+--- on every robot-placed entity would defeat caching exactly when construction
+--- is busiest, so only caches whose last scan area covers the event are marked.
+---@param event table
+local mark_dirty_near = function(event)
+  local position, surface_index = event_location(event)
+  if not position then
+    mark_all_dirty()
+    return
+  end
+
+  for player_index in pairs(storage.tracked_players) do
+    local cache = storage.cache[player_index]
+    if cache and not cache.dirty then
+      local last = cache.last_vehicle_pos
+      if not last or not cache.surface_index then
+        cache.dirty = true
+      elseif surface_index == nil or surface_index == cache.surface_index then
+        -- The cached position is allowed to be a quarter radius stale by design,
+        -- so the comparison is deliberately generous.
+        local reach = (cache.radius or 0) * 1.5 + 4
+        if util.dist_sq(last, position) <= reach * reach then
+          cache.dirty = true
+        end
+      end
+    end
   end
 end
 
@@ -116,6 +166,7 @@ local service_player = function(player)
     cache.last_scan_tick = game.tick
     cache.vehicle_unit_number = vehicle.unit_number
     cache.surface_index = vehicle.surface.index
+    cache.radius = radius
     cache.last_vehicle_pos = { x = vehicle.position.x, y = vehicle.position.y }
   end
 
@@ -151,7 +202,9 @@ local on_tick = function(event)
         service_player(player)
       end
     else
-      storage.tracked_players[player_index] = nil
+      -- Cleared through forget_player so the cache, ledger and baseline go too,
+      -- rather than leaking one entry per departed player into the save.
+      forget_player(player_index)
     end
   end
 end
@@ -182,6 +235,19 @@ local on_player_died = function(event)
   forget_player(event.player_index)
 end
 
+--- Disconnecting must not quietly donate the borrowed items to the vehicle: the
+--- character stays in the world, so the normal return path still works.
+local on_player_left = function(event)
+  local player = game.get_player(event.player_index)
+  if player and player.valid then
+    local vehicle = player.vehicle
+    if vehicle and vehicle.valid then
+      transfer.return_borrowed(player, vehicle)
+    end
+  end
+  forget_player(event.player_index)
+end
+
 local on_entity_died = function(event)
   local entity = event.entity
   if not (entity and entity.valid) then return end
@@ -204,8 +270,11 @@ script.on_configuration_changed(function()
   init_storage()
   -- Existing saves have no baselines, and without one overflow reclaim cannot
   -- tell the vehicle's own stock apart from spoils. Re-tracking captures it.
+  --
+  -- The ledger has to go with it: a debt recorded against the old baseline would
+  -- be settled against the new one, returning items that were never lent.
   for player_index in pairs(storage.tracked_players) do
-    storage.tracked_players[player_index] = nil
+    forget_player(player_index)
   end
   reconcile_tracked()
 end)
@@ -221,8 +290,13 @@ script.on_nth_tick(BASE_TICK, on_tick)
 
 script.on_event(defines.events.on_player_driving_changed_state, on_driving_changed)
 script.on_event(defines.events.on_pre_player_died, on_player_died)
-script.on_event(defines.events.on_player_left_game, on_player_died)
-script.on_event(defines.events.on_entity_died, on_entity_died)
+script.on_event(defines.events.on_player_left_game, on_player_left)
+script.on_event(defines.events.on_entity_died, on_entity_died, {
+  -- Unfiltered this would run for every biter, tree and rock that dies anywhere
+  -- on the map, which is a real cost during combat.
+  { filter = "type", type = "car" },
+  { filter = "type", type = "spider-vehicle" },
+})
 
 local dirty_events = {
   defines.events.on_built_entity,
@@ -244,7 +318,7 @@ local dirty_events = {
 }
 
 for _, event_id in pairs(dirty_events) do
-  script.on_event(event_id, mark_all_dirty)
+  script.on_event(event_id, mark_dirty_near)
 end
 
 script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
@@ -254,6 +328,9 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
 end)
 
 commands.add_command("vsi-debug", "Vehicle Shared Inventory diagnostics", function(command)
+  -- Absent when the command is run from the server console, where there is no
+  -- player to report to.
+  if not command.player_index then return end
   local player = game.get_player(command.player_index)
   if not player then return end
 
@@ -299,7 +376,7 @@ commands.add_command("vsi-debug", "Vehicle Shared Inventory diagnostics", functi
   local has_ghosts, has_deconstruction = needs.probe_work(vehicle, resolved_radius)
   say("work nearby: ghosts=" .. tostring(has_ghosts) .. " deconstruction=" .. tostring(has_deconstruction))
   say("robot capacity: " .. robots.capacity(vehicle) .. ", present: " .. robots.present(vehicle, trunk))
-  say("trunk: " .. trunk.count_empty_stacks() .. " free of " .. #trunk .. " slots")
+  say("trunk: " .. trunk.count_empty_stacks(false, false) .. " free of " .. #trunk .. " slots")
 
   local required = needs.scan(player, vehicle, trunk, resolved_radius)
   local baseline = storage.baseline[player.index]
