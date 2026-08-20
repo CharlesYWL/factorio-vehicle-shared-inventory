@@ -115,11 +115,11 @@ for each (item, needed) in needs, sorted by needed ascending:
 
 ### 3.3.1 溢出回收 `pull_overflow`
 
-拆除产物会占满后备箱导致机器人停工，需要反向回收。上车时拍一张后备箱基线快照，只有超出基线的部分才可回收：
+拆除产物会占满后备箱导致机器人停工，需要反向回收。第一名乘员上车时拍一张后备箱基线快照；可回收量是超出「基线 + 其他乘员未清账本」的部分：
 
 ```
 if 后备箱空格 (不计 bar 限制) > 总格数 * threshold (默认 20%): return
-budget[item] = 后备箱现有 - 上车基线[item]
+budget[item] = 后备箱现有 - 上车基线[item] - Σ 其他乘员账本[item]
 for each 整栈:
     if 是机器人 / 是弹药 / fuel_value > 0 / 在完整需求集合中: skip
     if 玩家背包中该品类数量 == 0: skip
@@ -141,13 +141,15 @@ for each 整栈:
 
 ```
 for each (item, amount) in ledger[player]:
-    actual = min(amount, trunk.get_item_count(item))
+    protected = 上车基线[item] + Σ 其他乘员账本[item]
+    if 是机器人: 召回 amount + protected 个到后备箱
+    actual = min(amount, trunk.get_item_count(item) - protected)
     moved = character_inventory.insert{item, count = actual}
     trunk.remove{item, count = moved}
 clear ledger[player]
 ```
 
-原则：**只还借出的，不抢载具原有物资**。ledger 记录本 mod 净搬入的量；若期间被机器人消耗，`actual` 自然减少，不会凭空产生物品。
+原则：**只还借出的，不抢载具原有物资，也不抢同乘者尚未归还的借出物。** 第一名上车的人拍基线；后续乘员共享这份基线。ledger 记录本玩家净搬入的量；若期间被机器人消耗，`actual` 自然减少，不会凭空产生物品。
 
 玩家背包满时：剩余留在载具，ledger 清空（避免无限累积），打印一次提示。
 
@@ -228,12 +230,21 @@ storage = {
     }
   },
   ledger = {
-    [player_index] = { ["iron-plate/normal"] = { name=, quality=, count= } }
+    [player_index] = {
+      vehicle = 123,
+      items = { ["iron-plate/normal"] = { name=, quality=, count= } },
+    }
+  },
+  vehicles = {
+    [unit_number] = {
+      baseline = { ["iron-plate/normal"] = { name=, quality=, count= } },
+      occupants = { [player_index] = true },
+    }
   },
 }
 ```
 
-迁移：`on_configuration_changed` 中对缺失字段补默认值，不做破坏性重建。
+迁移：`on_configuration_changed` 清空旧的按玩家基线与账本，再对当前乘员重新入座拍照。版本升级时破坏性重建是有意的，避免旧债配上新基线。
 
 ---
 
@@ -268,7 +279,7 @@ factorio-vehicle-shared-inventory/
 | 玩家在载具内死亡 | ledger 清空（物品已随尸体处理） |
 | 载具被摧毁 | ledger 清空，`on_entity_died` 监听 |
 | 换乘另一台载具 | 先对旧载具执行回流，再重建 cache |
-| 多人游戏 | 全部状态按 `player_index` 隔离，无全局共享 |
+| 多人游戏 | 账本按 `player_index` 隔离；同乘一车时基线按 `vehicle.unit_number` 共享，结算保护额 = 载具基线 + 其他乘员未清账本 |
 | 玩家使用 remote 控制蜘蛛（非乘坐） | 不生效（`player.vehicle` 为 nil），明确不支持 |
 | 载具跨星球（太空平台） | surface 变化触发 cache 失效重扫 |
 | 物品带 quality | 全流程以 `{name, quality}` 为单位，不合并不同 quality |

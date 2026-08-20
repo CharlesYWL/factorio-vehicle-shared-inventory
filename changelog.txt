@@ -1,4 +1,25 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.2.1
+Date: 2026-08-19
+  Bugfixes:
+    - Two players sharing one vehicle no longer steal each other's borrowed items on exit. The
+      boarding baseline is now per vehicle, and a return is capped by the vehicle stock plus every
+      other occupant's still-open ledger
+    - Recalling robots on exit now targets the debt plus the protected amount, so robots that were
+      already in the trunk when you boarded are not subtracted twice
+    - Destroying a vehicle now forgets passengers who had boarded but not yet been scanned, instead
+      of leaving their ledger attached to the next vehicle they enter
+    - Overflow reclaim no longer counts a newly emptied barred slot as free space
+  Optimizations:
+    - Deconstruction probes check the player's own force first (limit 1) before scanning neutral
+      trees and rocks
+    - Distance sorting of oversized ghost scans computes each entity's position once instead of on
+      every comparison
+  Changes:
+    - Dead robot reverse-lookup and insert-plan request parsing were removed; item_requests is the
+      2.0 ItemWithQualityCount array
+
+---------------------------------------------------------------------------------------------------
 Version: 0.2.0
 Date: 2026-08-17
   Bugfixes:

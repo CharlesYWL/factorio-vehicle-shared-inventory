@@ -15,25 +15,8 @@ local quality_name = function(entity)
   return quality.name or "normal"
 end
 
---- Total count carried by an insert-plan style `items` payload, which nests the
---- amounts per target inventory slot instead of exposing a flat count.
----@param items table
----@return number
-local insert_plan_count = function(items)
-  if type(items) ~= "table" then return 0 end
-
-  local total = items.grid_count or 0
-  local in_inventory = items.in_inventory
-  if type(in_inventory) == "table" then
-    for _, position in pairs(in_inventory) do
-      total = total + (position.count or 1)
-    end
-  end
-  return total
-end
-
---- Item request payloads differ between API revisions, so the flat 2.0 array
---- form, the insert-plan form and the legacy name->count dictionary are all
+--- Item request payloads differ between API revisions, so the 2.0
+--- ItemWithQualityCount array and the legacy name->count dictionary are both
 --- handled. Entity ghosts carry these too: a blueprinted machine records its
 --- modules on the ghost long before the item request proxy exists.
 ---@param source LuaEntity ghost or item request proxy
@@ -50,10 +33,7 @@ local collect_item_requests = function(source, out)
       if type(name) == "table" then name = name.name end
       if type(quality) == "table" then quality = quality.name end
 
-      local count = value.count
-      if type(count) ~= "number" then count = insert_plan_count(value.items) end
-
-      if name then util.add_item(out, name, quality, count) end
+      if name then util.add_item(out, name, quality, value.count) end
     elseif type(key) == "string" and type(value) == "number" then
       util.add_item(out, key, quality_name(source), value)
     end
@@ -115,9 +95,23 @@ end
 ---@param force LuaForce
 ---@return boolean
 local has_deconstruction_for = function(surface, position, radius, force)
+  -- Player-force buildings are cheap to probe and cover factory deconstruction.
+  -- Trees, rocks and cliffs are neutral, so they need a second query; that one
+  -- is still checked against this force so another force's orders are ignored.
+  if surface.count_entities_filtered({
+    position = position,
+    radius = radius,
+    force = force,
+    to_be_deconstructed = true,
+    limit = 1,
+  }) > 0 then
+    return true
+  end
+
   local candidates = surface.find_entities_filtered({
     position = position,
     radius = radius,
+    force = "neutral",
     to_be_deconstructed = true,
   })
 
@@ -193,25 +187,24 @@ local gather_sources = function(surface, position, radius, force)
 
   if total <= limit then return entities, has_work end
 
-  table.sort(entities, function(a, b)
-    return util.dist_sq(a.position, position) < util.dist_sq(b.position, position)
+  -- Distances are computed once: the sort comparator would otherwise re-read
+  -- entity.position on every comparison (two Lua↔C++ round-trips each time).
+  local decorated = {}
+  for index = 1, total do
+    local entity = entities[index]
+    decorated[index] = { entity = entity, d = util.dist_sq(entity.position, position) }
+  end
+  table.sort(decorated, function(a, b)
+    return a.d < b.d
   end)
 
   local trimmed = {}
   for index = 1, limit do
-    trimmed[index] = entities[index]
+    trimmed[index] = decorated[index].entity
   end
   return trimmed, has_work
 end
 
---- Computes what the trunk is still missing to satisfy nearby build orders.
---- Robots are appended after the material subtraction because their shortfall is
---- computed against roboport capacity, not against ghost requirements.
----@param player LuaPlayer
----@param vehicle LuaEntity
----@param trunk LuaInventory
----@param radius number
----@return table needs keyed by item_key
 --- Computes what the trunk is still missing to satisfy nearby build orders.
 --- Robots are appended after the material subtraction because their shortfall is
 --- computed against roboport capacity, not against ghost requirements.

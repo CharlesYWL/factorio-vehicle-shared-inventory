@@ -87,7 +87,6 @@ Reports whether the player is tracked, the powered roboport radius, ghost count 
 - Robots that are in flight or carrying cargo are not recalled on exit. They stay with the vehicle rather than being destroyed, so a return may be partial — nothing is lost.
 - Robots are not recalled at all while the vehicle sits inside your base's roboport coverage. The vehicle's roboport merges into the base network there, so its robots can no longer be told apart from the base's and touching them would mean destroying base robots. Lending still works normally; the robots simply stay in the trunk as items.
 - Materials the robots have already consumed are not made up out of the vehicle's own stock on exit, so a return may be partial by design.
-- Two players sharing one vehicle each keep their own ledger and boarding baseline. The totals stay consistent in ordinary use, but the bookkeeping is per player rather than per vehicle, so unusual boarding orders can attribute a return to the wrong player.
 
 See [SPEC.md](./SPEC.md) for the full design.
 

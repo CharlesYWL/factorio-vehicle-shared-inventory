@@ -161,7 +161,13 @@ util.move_amount = function(source, target, wanted)
 
   source.count = wanted
   local inserted = target.insert(source)
-  source.count = available - inserted
+  local remainder = available - inserted
+  -- count = 0 is rejected by the engine; clear() is the documented empty stack.
+  if remainder <= 0 then
+    source.clear()
+  else
+    source.count = remainder
+  end
   return inserted
 end
 

@@ -7,28 +7,19 @@ local robots = {}
 --- modded robots are picked up without hardcoding names. Logistic robots are
 --- deliberately excluded: vehicle roboport equipment cannot operate them.
 local construction_robot_items = nil
-local entity_to_item = nil
 
 ---@return table<string, string>
 local get_robot_items = function()
   if construction_robot_items then return construction_robot_items end
 
   construction_robot_items = {}
-  entity_to_item = {}
   for name, prototype in pairs(prototypes.item) do
     local result = prototype.place_result
     if result and result.type == "construction-robot" then
       construction_robot_items[name] = result.name
-      entity_to_item[result.name] = name
     end
   end
   return construction_robot_items
-end
-
----@return table<string, string>
-local get_entity_to_item = function()
-  get_robot_items()
-  return entity_to_item
 end
 
 --- Total robots the vehicle's roboport equipment can hold.
@@ -130,10 +121,11 @@ end
 ---@return number
 local already_lent = function(player)
   local ledger = storage.ledger and storage.ledger[player.index]
-  if not ledger then return 0 end
+  local items = ledger and ledger.items
+  if not items then return 0 end
 
   local total = 0
-  for _, entry in pairs(ledger) do
+  for _, entry in pairs(items) do
     if get_robot_items()[entry.name] then total = total + entry.count end
   end
   return total

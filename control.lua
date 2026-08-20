@@ -11,7 +11,7 @@ local init_storage = function()
   storage.tracked_players = storage.tracked_players or {}
   storage.cache = storage.cache or {}
   storage.ledger = storage.ledger or {}
-  storage.baseline = storage.baseline or {}
+  storage.vehicles = storage.vehicles or {}
 end
 
 ---@param player_index number
@@ -39,19 +39,22 @@ local track_player = function(player_index)
 
   local player = game.get_player(player_index)
   if not player then return end
-  local trunk = eligibility.trunk_of(player.vehicle)
-  if trunk then
-    transfer.capture_baseline(player_index, trunk)
+  local vehicle = player.vehicle
+  -- Recorded on board, before the first scan, so a passenger who has not yet
+  -- been serviced is still found when the vehicle is destroyed.
+  if vehicle and vehicle.valid and eligibility.trunk_of(vehicle) then
+    cache.vehicle_unit_number = vehicle.unit_number
+    transfer.join_vehicle(player_index, vehicle)
   end
 end
 
---- Forgets a player entirely: tracking, cache, ledger and boarding baseline.
+--- Forgets a player entirely: tracking, cache, ledger and vehicle occupancy.
 ---@param player_index number
 local forget_player = function(player_index)
   storage.tracked_players[player_index] = nil
   storage.cache[player_index] = nil
   transfer.clear_ledger(player_index)
-  transfer.clear_baseline(player_index)
+  transfer.unjoin_player(player_index)
 end
 
 --- Reconciles the tracked set against reality. The driving event never fires for
@@ -69,10 +72,19 @@ local reconcile_tracked = function()
       forget_player(player.index)
     elseif in_vehicle and tracked then
       -- A swap between vehicles can happen without a driving event pairing that
-      -- this loop would otherwise miss, leaving a baseline from the old vehicle.
+      -- this loop would otherwise miss, leaving a debt recorded against the old
+      -- vehicle. Settle that vehicle first so the new join cannot recapture a
+      -- baseline that still contains another player's items, or repay V1 from V2.
       local cache = storage.cache[player.index]
       if cache and cache.vehicle_unit_number
         and cache.vehicle_unit_number ~= vehicle.unit_number then
+        local previous = game.get_entity_by_unit_number(cache.vehicle_unit_number)
+        if previous and previous.valid then
+          transfer.return_borrowed(player, previous)
+        else
+          transfer.clear_ledger(player.index)
+          transfer.unjoin_player(player.index)
+        end
         track_player(player.index)
       end
     end
@@ -202,7 +214,7 @@ local on_tick = function(event)
         service_player(player)
       end
     else
-      -- Cleared through forget_player so the cache, ledger and baseline go too,
+      -- Cleared through forget_player so the cache, ledger and occupancy go too,
       -- rather than leaking one entry per departed player into the save.
       forget_player(player_index)
     end
@@ -253,10 +265,29 @@ local on_entity_died = function(event)
   if not (entity and entity.valid) then return end
   if not eligibility.trunk_of(entity) then return end
 
-  for player_index in pairs(storage.tracked_players) do
-    local cache = storage.cache[player_index]
-    if cache and cache.vehicle_unit_number == entity.unit_number then
+  -- Driving-changed does not fire when a vehicle is destroyed, so occupants
+  -- must be forgotten here. The occupant set is the source of truth; the cache
+  -- unit number is a fallback for anyone who was tracked before a join ran.
+  local unit_number = entity.unit_number
+  local seen = {}
+  local veh = storage.vehicles[unit_number]
+  if veh and veh.occupants then
+    local occupants = {}
+    for player_index in pairs(veh.occupants) do
+      occupants[#occupants + 1] = player_index
+    end
+    for _, player_index in pairs(occupants) do
+      seen[player_index] = true
       forget_player(player_index)
+    end
+  end
+
+  for player_index in pairs(storage.tracked_players) do
+    if not seen[player_index] then
+      local cache = storage.cache[player_index]
+      if cache and cache.vehicle_unit_number == unit_number then
+        forget_player(player_index)
+      end
     end
   end
 end
@@ -273,9 +304,14 @@ script.on_configuration_changed(function()
   --
   -- The ledger has to go with it: a debt recorded against the old baseline would
   -- be settled against the new one, returning items that were never lent.
+  -- Pre-0.2.1 saves also keyed the baseline per player; that map is dropped so
+  -- it cannot be mixed with the per-vehicle records.
   for player_index in pairs(storage.tracked_players) do
     forget_player(player_index)
   end
+  storage.baseline = nil
+  storage.ledger = {}
+  storage.vehicles = {}
   reconcile_tracked()
 end)
 
@@ -379,13 +415,20 @@ commands.add_command("vsi-debug", "Vehicle Shared Inventory diagnostics", functi
   say("trunk: " .. trunk.count_empty_stacks(false, false) .. " free of " .. #trunk .. " slots")
 
   local required = needs.scan(player, vehicle, trunk, resolved_radius)
-  local baseline = storage.baseline[player.index]
+  local veh = storage.vehicles[vehicle.unit_number]
+  local baseline = veh and veh.baseline
   local baseline_types = 0
+  local occupants = 0
   if baseline then
     for _ in pairs(baseline) do baseline_types = baseline_types + 1 end
-    say("boarding baseline: " .. baseline_types .. " item types protected")
+  end
+  if veh and veh.occupants then
+    for _ in pairs(veh.occupants) do occupants = occupants + 1 end
+  end
+  if baseline then
+    say("vehicle baseline: " .. baseline_types .. " item types protected, occupants=" .. occupants)
   else
-    say("boarding baseline: NONE")
+    say("vehicle baseline: NONE")
   end
 
   local lines = 0
